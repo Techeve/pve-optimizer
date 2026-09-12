@@ -1,0 +1,197 @@
+# pve-optimizer — GitLab CI/CD
+#
+# Ablauf:
+#   check    MR-Regeln: Ziel main nur aus develop; Commit-Messages müssen
+#            Conventional Commits sein (feat:/fix:/refactor:/...)
+#   test     go vet/test, golangci-lint, govulncheck
+#   build    Linux-Binaries (amd64/arm64) — der Dienst läuft auf Proxmox
+#   release  auf main: ermittelt aus den Commits seit dem letzten Tag
+#            automatisch die nächste Version, generiert den Changelog,
+#            erzeugt Tag + Release mit Binaries und schreibt VERSION +
+#            CHANGELOG.md zurück nach develop.
+#
+# Merge Requests nach main sind nur mergebar, wenn die Pipeline grün ist.
+
+stages: [check, test, build, release]
+
+default:
+  tags: [docker]
+
+variables:
+  GO_IMAGE: golang:1-alpine
+  LINT_IMAGE: golangci/golangci-lint:v2.12-alpine
+  # Volle Historie + Tags: die Versionsermittlung braucht beides.
+  GIT_DEPTH: "0"
+  GOMODCACHE: $CI_PROJECT_DIR/.cache/go-mod
+  GOCACHE: $CI_PROJECT_DIR/.cache/go-build
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.go-cache: &go-cache
+  key: go-$CI_DEFAULT_BRANCH
+  paths: [.cache/go-mod, .cache/go-build]
+
+## ---- check -------------------------------------------------------------------
+
+# Workflow-Regel des Projekts: In main fließt Code nur aus develop.
+check:mr-source:
+  stage: check
+  image: alpine:3
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"
+  script:
+    - |
+      if [ "$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" != "develop" ]; then
+        echo "FEHLER: Merge Requests nach main sind nur aus develop erlaubt."
+        echo "Quelle dieses MR: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+        exit 1
+      fi
+      echo "OK: MR kommt aus develop."
+
+# Commit-Messages müssen Conventional Commits sein — daraus entstehen
+# Versionsnummer und Changelog.
+check:commits:
+  stage: check
+  image: alpine:3
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - apk add --no-cache git
+    - git fetch --quiet origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - |
+      PATTERN='^(feat|fix|perf|refactor|docs|test|ci|chore|build|style|revert)(\([^)]*\))?!?: .+'
+      git log --no-merges --format='%h%x09%s' "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME..HEAD" | while IFS="$(printf '\t')" read -r hash subject; do
+        if ! echo "$subject" | grep -qE "$PATTERN"; then
+          echo "FEHLER: Commit $hash folgt nicht Conventional Commits: '$subject'"
+          echo "  Erwartet: typ(scope): beschreibung — z.B. 'feat(limits): burst-werte ergaenzen'"
+          exit 1
+        fi
+        echo "OK: $hash $subject"
+      done
+
+## ---- test ----------------------------------------------------------------------
+
+backend:
+  stage: test
+  image: $GO_IMAGE
+  cache: *go-cache
+  script:
+    - go vet ./...
+    - go test ./...
+
+lint:
+  stage: test
+  image: $LINT_IMAGE
+  cache: *go-cache
+  script:
+    - golangci-lint run ./...
+
+govulncheck:
+  stage: test
+  image: $GO_IMAGE
+  cache: *go-cache
+  script:
+    - go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+## ---- build ---------------------------------------------------------------------
+
+# Auf main: nächste Version aus den Conventional Commits seit dem letzten
+# Tag ermitteln (tools/release).
+version:
+  stage: check
+  image: $GO_IMAGE
+  cache: *go-cache
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - apk add --no-cache git
+    - git fetch --tags --quiet origin
+    - go run ./tools/release -env release.env -changelog changelog-snippet.md
+    - cat release.env
+  artifacts:
+    reports:
+      dotenv: release.env
+    paths: [changelog-snippet.md]
+    expire_in: 1 week
+
+# Nur Linux: Der Dienst läuft auf Proxmox-Nodes bzw. daneben im Netz.
+binaries:
+  stage: build
+  image: $GO_IMAGE
+  cache: *go-cache
+  needs:
+    - backend
+    - lint
+    - govulncheck
+    - job: version
+      optional: true
+  script:
+    - APP_VERSION=${NEXT_VERSION:-$(cat VERSION)}
+    - echo "Baue Version ${APP_VERSION} (Build ${CI_PIPELINE_IID})"
+    - export LDFLAGS="-s -w
+        -X pve-optimizer/internal/version.Version=${APP_VERSION}
+        -X pve-optimizer/internal/version.Build=${CI_PIPELINE_IID}
+        -X pve-optimizer/internal/version.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    - mkdir -p bin
+    - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o bin/pve-optimizer-linux-amd64 ./cmd/pve-optimizer
+    - GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o bin/pve-optimizer-linux-arm64 ./cmd/pve-optimizer
+    - ls -lh bin/
+  artifacts:
+    paths: [bin/]
+    expire_in: 1 month
+
+## ---- release -------------------------------------------------------------------
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs: [version, binaries]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - apk add --no-cache git curl
+    - |
+      if [ "$RELEASE_NEEDED" != "true" ]; then
+        echo "Keine release-relevanten Commits seit ${LAST_TAG:-Anfang} — kein neues Release."
+        exit 0
+      fi
+    - TAG="v${NEXT_VERSION}"
+    - echo "Neues Release ${TAG} (letztes war ${LAST_TAG:-keins})"
+    - PKG_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/pve-optimizer/${NEXT_VERSION}"
+    - |
+      ASSET_LINKS=""
+      for f in bin/*; do
+        name=$(basename "$f")
+        echo "Lade $name hoch ..."
+        curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$f" "${PKG_URL}/${name}" > /dev/null
+        ASSET_LINKS="$ASSET_LINKS --assets-link {\"name\":\"${name}\",\"url\":\"${PKG_URL}/${name}\",\"link_type\":\"package\"}"
+      done
+    - |
+      release-cli create \
+        --name "pve-optimizer ${TAG}" \
+        --tag-name "$TAG" \
+        --ref "$CI_COMMIT_SHA" \
+        --description changelog-snippet.md \
+        $ASSET_LINKS
+    - |
+      if [ -z "$RELEASE_TOKEN" ]; then
+        echo "WARNUNG: CI-Variable RELEASE_TOKEN fehlt — VERSION/CHANGELOG.md"
+        echo "werden nicht nach develop zurueckgeschrieben."
+        exit 0
+      fi
+      git fetch --quiet origin develop
+      git checkout -B develop origin/develop
+      echo "$NEXT_VERSION" > VERSION
+      if [ -f CHANGELOG.md ]; then tail -n +3 CHANGELOG.md > /tmp/changelog-rest; else : > /tmp/changelog-rest; fi
+      { echo "# Changelog"; echo; cat changelog-snippet.md; echo; cat /tmp/changelog-rest; } > CHANGELOG.md
+      git add VERSION CHANGELOG.md
+      git -c user.name="release-bot" -c user.email="release-bot@gitlab.techeve.de" \
+        commit -m "chore(release): v${NEXT_VERSION} — VERSION & Changelog aktualisiert [skip ci]"
+      git push "https://release-bot:${RELEASE_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" develop
+      echo "VERSION und CHANGELOG.md auf develop aktualisiert."

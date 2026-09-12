@@ -1,0 +1,31 @@
+# golangci-lint für pve-optimizer.
+#
+# Kuratierte Auswahl statt "alles an", wie in den übrigen Go-Projekten.
+# misspell ist bewusst NICHT dabei — die Kommentare sind deutsch, und
+# misspell kennt nur Englisch (meldet sonst "Konfiguration" als Tippfehler).
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck # unbehandelte Fehler
+    - govet # Standard-Vet-Checks
+    - ineffassign # Zuweisungen, die nie gelesen werden
+    - staticcheck # Bugs, Vereinfachungen, veraltete APIs
+    - unused # toter Code
+
+  exclusions:
+    presets:
+      # Deckt u. a. `defer x.Close()` ab: Ein Fehler beim Schließen
+      # eines gelesenen Bodys ist nicht behandelbar und verrauscht
+      # sonst jede Ausgabe.
+      - std-error-handling
+    rules:
+      # In Tests schlägt ein fehlgeschlagener Schreib-/Aufräumaufruf
+      # ohnehin über die Assertion durch.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
