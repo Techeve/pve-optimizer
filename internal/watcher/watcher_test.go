@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -320,5 +321,83 @@ func TestNurEigenerNode(t *testing.T) {
 	}
 	if _, found := client.updates[301]; !found {
 		t.Error("Sweep haette den eigenen node anpassen muessen")
+	}
+}
+
+// failingClient laesst das Schreiben scheitern — wie ein kurzzeitig
+// schreibgeschuetztes /etc/pve oder ein Aussetzer der API.
+type failingClient struct {
+	fakeClient
+	failFor map[int]bool
+}
+
+func (f *failingClient) UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error {
+	if f.failFor[vmid] {
+		return errors.New("read-only file system")
+	}
+	return f.fakeClient.UpdateVMConfig(ctx, node, vmid, fields)
+}
+
+// Eine fehlgeschlagene Aufgabe darf nicht als erledigt gelten: Sonst bliebe
+// die VM dauerhaft ungedrosselt, obwohl der Fehler nur voruebergehend war.
+func TestFehlgeschlageneAufgabeWirdErneutVersucht(t *testing.T) {
+	client := &failingClient{
+		fakeClient: fakeClient{
+			tasks: []proxmox.Task{
+				{UPID: "UPID:x", Node: "vmh03", Type: "qmcreate", ID: "400", Status: "OK", EndTime: 1000},
+			},
+			configs: map[int]map[string]string{
+				400: {"scsi0": "local-pool:vm-400-disk-0,size=32G"},
+			},
+		},
+		failFor: map[int]bool{400: true},
+	}
+
+	cfg := testConfig(t, false)
+	w := newTestWatcher(t, cfg, client)
+
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if w.state.LastEndTime >= 1000 {
+		t.Fatalf("LastEndTime = %d — die fehlgeschlagene Aufgabe gilt faelschlich als erledigt", w.state.LastEndTime)
+	}
+
+	// Beim naechsten Durchlauf klappt das Schreiben.
+	client.failFor = nil
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("zweiter checkOnce() = %v", err)
+	}
+	if _, found := client.updates[400]; !found {
+		t.Error("die aufgabe haette erneut versucht werden muessen")
+	}
+	if w.state.LastEndTime != 1000 {
+		t.Errorf("LastEndTime = %d, erwartet 1000 nach erfolgreichem Durchlauf", w.state.LastEndTime)
+	}
+}
+
+// Eine spaetere erfolgreiche Aufgabe darf eine frueher fehlgeschlagene
+// nicht ueberholen.
+func TestErfolgUeberholtFehlschlagNicht(t *testing.T) {
+	client := &failingClient{
+		fakeClient: fakeClient{
+			tasks: []proxmox.Task{
+				{UPID: "UPID:y", Node: "vmh03", Type: "qmcreate", ID: "401", Status: "OK", EndTime: 1000},
+				{UPID: "UPID:z", Node: "vmh03", Type: "qmcreate", ID: "402", Status: "OK", EndTime: 2000},
+			},
+			configs: map[int]map[string]string{
+				401: {"scsi0": "local-pool:vm-401-disk-0,size=32G"},
+				402: {"scsi0": "local-pool:vm-402-disk-0,size=32G"},
+			},
+		},
+		failFor: map[int]bool{401: true},
+	}
+
+	w := newTestWatcher(t, testConfig(t, false), client)
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if w.state.LastEndTime >= 1000 {
+		t.Errorf("LastEndTime = %d — vm 402 hat die fehlgeschlagene vm 401 ueberholt", w.state.LastEndTime)
 	}
 }

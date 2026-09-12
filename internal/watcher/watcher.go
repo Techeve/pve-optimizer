@@ -115,19 +115,33 @@ func (w *Watcher) checkOnce(ctx context.Context) error {
 	}
 
 	newest := w.state.LastEndTime
+	var firstFailure int64
+
 	for _, task := range tasks {
 		if !w.isNew(task) {
+			continue
+		}
+		if err := w.handleTask(ctx, task); err != nil {
+			w.log.Error("aufgabe nicht verarbeitet", "upid", task.UPID, "fehler", err)
+			if firstFailure == 0 || task.EndTime < firstFailure {
+				firstFailure = task.EndTime
+			}
 			continue
 		}
 		if task.EndTime > newest {
 			newest = task.EndTime
 		}
-		if err := w.handleTask(ctx, task); err != nil {
-			w.log.Error("aufgabe nicht verarbeitet", "upid", task.UPID, "fehler", err)
-		}
 	}
 
-	if newest == w.state.LastEndTime {
+	// Nicht über eine fehlgeschlagene Aufgabe hinaus vorrücken. Sonst gilt
+	// sie als erledigt und die VM bliebe dauerhaft ungedrosselt, obwohl der
+	// Fehler nur vorübergehend war — etwa ein Aussetzer der API oder ein
+	// kurzzeitig schreibgeschütztes /etc/pve ohne Quorum.
+	if firstFailure > 0 && newest >= firstFailure {
+		newest = firstFailure - 1
+	}
+
+	if newest <= w.state.LastEndTime {
 		return nil
 	}
 	w.state.LastEndTime = newest

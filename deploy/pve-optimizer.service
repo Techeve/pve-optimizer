@@ -16,8 +16,14 @@ EnvironmentFile=-/etc/pve-optimizer/secret.env
 
 StateDirectory=pve-optimizer
 NoNewPrivileges=true
-ProtectSystem=full
 PrivateTmp=true
+
+# ProtectSystem=full legt /etc read-only — und damit auch /etc/pve, wo die
+# VM-Konfigurationen liegen. Der Dienst startet dann zwar, kann aber nichts
+# schreiben ("Read-only file system"). Der Cluster-Dateibaum muss deshalb
+# ausdrücklich freigegeben werden.
+ProtectSystem=full
+ReadWritePaths=/etc/pve
 
 [Install]
 WantedBy=multi-user.target
