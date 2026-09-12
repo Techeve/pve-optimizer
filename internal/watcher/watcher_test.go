@@ -276,3 +276,49 @@ func TestSweepDryRunSchreibtNicht(t *testing.T) {
 		t.Errorf("dry_run darf nichts schreiben, bekommen: %v", client.updates)
 	}
 }
+
+// Laeuft der Dienst auf jedem Node, darf jede Instanz nur ihre eigenen VMs
+// anfassen — sonst nehmen sich mehrere dieselbe VM gleichzeitig vor.
+func TestNurEigenerNode(t *testing.T) {
+	cfg := testConfig(t, false)
+	restrict := true
+	cfg.OnlyOwnNode = &restrict
+	cfg.Node = "vmh03"
+
+	client := &fakeClient{
+		tasks: []proxmox.Task{
+			{UPID: "UPID:f", Node: "vmh02", Type: "qmrestore", ID: "300", Status: "OK", EndTime: 1000},
+			{UPID: "UPID:g", Node: "vmh03", Type: "qmrestore", ID: "301", Status: "OK", EndTime: 1000},
+		},
+		vms: []proxmox.VM{
+			{VMID: 300, Node: "vmh02", Type: "qemu"},
+			{VMID: 301, Node: "vmh03", Type: "qemu"},
+		},
+		configs: map[int]map[string]string{
+			300: {"scsi0": "local-pool:vm-300-disk-0,size=32G"},
+			301: {"scsi0": "local-pool:vm-301-disk-0,size=32G"},
+		},
+	}
+
+	w := newTestWatcher(t, cfg, client)
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if _, found := client.updates[300]; found {
+		t.Error("vm auf einem fremden node darf nicht angefasst werden")
+	}
+	if _, found := client.updates[301]; !found {
+		t.Error("vm auf dem eigenen node haette angepasst werden muessen")
+	}
+
+	client.updates = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	if _, found := client.updates[300]; found {
+		t.Error("Sweep darf fremde nodes nicht anfassen")
+	}
+	if _, found := client.updates[301]; !found {
+		t.Error("Sweep haette den eigenen node anpassen muessen")
+	}
+}

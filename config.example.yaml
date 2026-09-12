@@ -9,6 +9,18 @@
 #          Einmal installieren, braucht einen API-Token.
 mode: local
 
+# Nur die VMs des Nodes bearbeiten, auf dem der Dienst läuft.
+#
+# Wichtig bei mode: local — auch dort greift pvesh clusterweit zu. Ohne
+# diese Grenze würden sich mehrere Instanzen dieselben VMs vornehmen.
+# Vorgabe: bei mode: local an, bei mode: api aus.
+#
+# only_own_node: true
+#
+# Der eigene Node-Name. Leer bedeutet: der Hostname des Rechners, was bei
+# Proxmox dem Node-Namen entspricht.
+# node: vmh02
+
 # Wie oft die Aufgabenliste abgefragt wird.
 poll_interval: 30s
 
@@ -40,6 +52,15 @@ defaults:
 # Profile je Speicherpool. Der Pool ist der Name vor dem Doppelpunkt im
 # Plattenwert, z. B. "local-pool" bei "local-pool:vm-100-disk-0".
 # Ein Wert von 0 oder ein weggelassener Schlüssel heißt: nicht setzen.
+#
+# Ein Schlüssel darf auch "<node>:<pool>" lauten. Das ist der Fall für
+# gleichnamige Pools, die auf verschiedenen Nodes auf unterschiedlicher
+# Hardware liegen — etwa eine Gen4-NVMe auf dem einen und eine langsamere
+# QLC-Platte auf dem anderen. Gesucht wird in dieser Reihenfolge:
+#
+#   vmh03:local-pool   genau dieser Pool auf genau diesem Node
+#   local-pool         der Pool auf allen Nodes
+#   defaults           alles Übrige
 pools:
   # Mit Burst: kurze Lastspitzen dürfen über die Dauerrate hinausgehen.
   # Wichtig: Zu jedem "_max" gehört die zugehörige Dauer, sonst burstet

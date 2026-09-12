@@ -42,6 +42,19 @@ Node ausgerollt und aktualisiert werden. `api` sieht den ganzen Cluster aus
 einer Installation heraus und läuft auch dann weiter, wenn ein Node neu
 startet.
 
+### Achtung bei mehreren Instanzen
+
+Auch im `local`-Modus greift `pvesh` **clusterweit** zu — eine Instanz sieht
+also alle Nodes. Läuft der Dienst auf jedem Node, müssen sich die Instanzen
+deshalb aufteilen, sonst nehmen sich mehrere dieselbe VM gleichzeitig vor.
+
+Dafür sorgt `only_own_node`, das im `local`-Modus **von selbst aktiv** ist:
+Jede Instanz bearbeitet nur die VMs ihres eigenen Nodes. Der Node-Name kommt
+aus dem Hostnamen und lässt sich mit `node:` überschreiben.
+
+Im `api`-Modus ist die Option aus — dort genügt eine Installation für den
+ganzen Cluster.
+
 ## Konfiguration
 
 Vorlage: [`config.example.yaml`](config.example.yaml).
@@ -87,6 +100,25 @@ jeweilige Familie unangetastet — sonst würde eine einzige unpassende Platte
 die ganze Änderung scheitern lassen.
 
 Ein weggelassener oder auf `0` gesetzter Schlüssel wird nicht geschrieben.
+
+### Profile je Node
+
+Ein Schlüssel unter `pools:` darf auch `<node>:<pool>` lauten. Das braucht
+man, wenn gleichnamige Pools auf verschiedenen Nodes auf unterschiedlicher
+Hardware liegen — etwa eine Gen4-NVMe auf dem einen und eine langsamere
+QLC-Platte auf dem anderen:
+
+```yaml
+pools:
+  local-pool:              # gilt für alle Nodes
+    mbps_wr: 200
+  vmh03:local-pool:        # ... außer auf vmh03
+    mbps_wr: 80
+```
+
+Gesucht wird von speziell nach allgemein: erst `<node>:<pool>`, dann
+`<pool>`, zuletzt `defaults`. Welches Profil gegriffen hat, steht im
+Protokoll.
 
 ### Die Burst-Dauer ist in der Weboberfläche unsichtbar
 

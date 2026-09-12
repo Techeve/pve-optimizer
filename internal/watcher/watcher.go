@@ -61,12 +61,21 @@ func (w *Watcher) Run(ctx context.Context) error {
 // Begrenzungen. Gedacht für den Rollout: Die laufende Beobachtung greift
 // nur bei neuen Aufgaben, bestehende VMs blieben sonst ungedrosselt.
 func (w *Watcher) Sweep(ctx context.Context) error {
-	vms, err := w.client.ListVMs(ctx)
+	all, err := w.client.ListVMs(ctx)
 	if err != nil {
 		return err
 	}
 
-	w.log.Info("durchlauf über alle vorhandenen vms", "anzahl", len(vms), "dry_run", w.cfg.DryRun)
+	var vms []proxmox.VM
+	for _, vm := range all {
+		if w.ownNode(vm.Node) {
+			vms = append(vms, vm)
+		}
+	}
+
+	w.log.Info("durchlauf über alle vorhandenen vms",
+		"anzahl", len(vms), "im cluster", len(all),
+		"nur eigener node", w.cfg.RestrictedToOwnNode(), "dry_run", w.cfg.DryRun)
 
 	var touched, failed int
 	for _, vm := range vms {
@@ -125,7 +134,15 @@ func (w *Watcher) checkOnce(ctx context.Context) error {
 func (w *Watcher) isNew(task proxmox.Task) bool {
 	return task.Finished() &&
 		relevantTasks[task.Type] &&
-		task.EndTime > w.state.LastEndTime
+		task.EndTime > w.state.LastEndTime &&
+		w.ownNode(task.Node)
+}
+
+// ownNode meldet, ob der Node bearbeitet werden darf. Läuft der Dienst auf
+// jedem Node, kümmert sich jede Instanz nur um ihren eigenen — sonst würden
+// sich mehrere gleichzeitig dieselbe VM vornehmen.
+func (w *Watcher) ownNode(node string) bool {
+	return !w.cfg.RestrictedToOwnNode() || node == w.cfg.Node
 }
 
 func (w *Watcher) handleTask(ctx context.Context, task proxmox.Task) error {
@@ -164,14 +181,14 @@ func (w *Watcher) applyLimits(ctx context.Context, node string, vmid int, log *s
 			continue
 		}
 
-		profile, known := w.cfg.ProfileFor(disk.Storage())
+		profile, source := w.cfg.ProfileFor(node, disk.Storage())
 		missing := limits.Missing(disk, profile)
 		if len(missing) == 0 {
 			continue
 		}
 
 		log.Info("platte wird begrenzt",
-			"platte", key, "pool", disk.Storage(), "eigenes_profil", known, "ergänzt", missing)
+			"platte", key, "pool", disk.Storage(), "profil", source, "ergänzt", missing)
 		fields[key] = limits.Apply(disk, missing)
 	}
 
