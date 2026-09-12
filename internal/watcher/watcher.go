@@ -41,8 +41,13 @@ func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
 
+	scope := "ganzer cluster"
+	if w.cfg.RestrictedToOwnNode() {
+		scope = "nur node " + w.cfg.Node
+	}
 	w.log.Info("beobachtung gestartet",
-		"modus", w.cfg.Mode, "intervall", w.cfg.PollInterval, "dry_run", w.cfg.DryRun)
+		"modus", w.cfg.Mode, "umfang", scope,
+		"intervall", w.cfg.PollInterval, "dry_run", w.cfg.DryRun)
 
 	for {
 		if err := w.checkOnce(ctx); err != nil {
