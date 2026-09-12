@@ -57,6 +57,41 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
+// Sweep geht einmalig alle vorhandenen VMs durch und ergänzt fehlende
+// Begrenzungen. Gedacht für den Rollout: Die laufende Beobachtung greift
+// nur bei neuen Aufgaben, bestehende VMs blieben sonst ungedrosselt.
+func (w *Watcher) Sweep(ctx context.Context) error {
+	vms, err := w.client.ListVMs(ctx)
+	if err != nil {
+		return err
+	}
+
+	w.log.Info("durchlauf über alle vorhandenen vms", "anzahl", len(vms), "dry_run", w.cfg.DryRun)
+
+	var touched, failed int
+	for _, vm := range vms {
+		log := w.log.With("node", vm.Node, "vmid", vm.VMID, "name", vm.Name)
+
+		changed, err := w.applyLimits(ctx, vm.Node, vm.VMID, log)
+		if err != nil {
+			// Eine einzelne VM darf den Durchlauf nicht abbrechen.
+			log.Error("vm nicht angepasst", "fehler", err)
+			failed++
+			continue
+		}
+		if changed > 0 {
+			touched++
+		}
+	}
+
+	w.log.Info("durchlauf abgeschlossen",
+		"geprüft", len(vms), "angepasst", touched, "fehlgeschlagen", failed)
+	if failed > 0 {
+		return fmt.Errorf("%d von %d vms konnten nicht angepasst werden", failed, len(vms))
+	}
+	return nil
+}
+
 // checkOnce verarbeitet alle Aufgaben, die seit dem letzten Durchlauf
 // fertig geworden sind.
 func (w *Watcher) checkOnce(ctx context.Context) error {

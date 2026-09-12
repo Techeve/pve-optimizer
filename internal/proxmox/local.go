@@ -31,6 +31,18 @@ func (c *LocalClient) RecentTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
+func (c *LocalClient) ListVMs(ctx context.Context) ([]VM, error) {
+	output, err := c.run(ctx, "get", "/cluster/resources", "--type", "vm")
+	if err != nil {
+		return nil, fmt.Errorf("vm-liste abrufen: %w", err)
+	}
+	var all []VM
+	if err := json.Unmarshal(output, &all); err != nil {
+		return nil, fmt.Errorf("vm-liste auswerten: %w", err)
+	}
+	return onlyQemu(all), nil
+}
+
 func (c *LocalClient) VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error) {
 	output, err := c.run(ctx, "get", vmPath(node, vmid))
 	if err != nil {

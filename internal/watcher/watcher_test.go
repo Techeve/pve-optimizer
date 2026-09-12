@@ -17,12 +17,17 @@ import (
 // fakeClient ersetzt Proxmox im Test und merkt sich, was geschrieben wurde.
 type fakeClient struct {
 	tasks   []proxmox.Task
+	vms     []proxmox.VM
 	configs map[int]map[string]string
 	updates map[int]map[string]string
 }
 
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
+}
+
+func (f *fakeClient) ListVMs(context.Context) ([]proxmox.VM, error) {
+	return f.vms, nil
 }
 
 func (f *fakeClient) VMConfig(_ context.Context, _ string, vmid int) (map[string]string, error) {
@@ -229,5 +234,45 @@ func TestCheckOnceVerarbeitetAufgabeNurEinmal(t *testing.T) {
 	}
 	if state.LastEndTime != 1000 {
 		t.Errorf("LastEndTime = %d, erwartet 1000", state.LastEndTime)
+	}
+}
+
+func TestSweepGehtAlleVorhandenenVMsDurch(t *testing.T) {
+	client := &fakeClient{
+		vms: []proxmox.VM{
+			{VMID: 200, Node: "vmh02", Name: "ohne-limits", Type: "qemu"},
+			{VMID: 201, Node: "vmh03", Name: "schon-begrenzt", Type: "qemu"},
+		},
+		configs: map[int]map[string]string{
+			200: {"scsi0": "local-pool:vm-200-disk-0,size=32G"},
+			201: {"scsi0": "local-pool:vm-201-disk-0,size=32G,mbps_rd=10,mbps_wr=10"},
+		},
+	}
+
+	w := newTestWatcher(t, testConfig(t, false), client)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+
+	if _, found := client.updates[200]; !found {
+		t.Error("vm 200 haette angepasst werden muessen")
+	}
+	if _, found := client.updates[201]; found {
+		t.Error("vm 201 war bereits begrenzt und darf nicht angefasst werden")
+	}
+}
+
+func TestSweepDryRunSchreibtNicht(t *testing.T) {
+	client := &fakeClient{
+		vms:     []proxmox.VM{{VMID: 202, Node: "vmh02", Type: "qemu"}},
+		configs: map[int]map[string]string{202: {"scsi0": "local-pool:vm-202-disk-0,size=32G"}},
+	}
+
+	w := newTestWatcher(t, testConfig(t, true), client)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	if len(client.updates) != 0 {
+		t.Errorf("dry_run darf nichts schreiben, bekommen: %v", client.updates)
 	}
 }

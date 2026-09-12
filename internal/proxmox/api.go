@@ -42,6 +42,14 @@ func (c *APIClient) RecentTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
+func (c *APIClient) ListVMs(ctx context.Context) ([]VM, error) {
+	var all []VM
+	if err := c.request(ctx, http.MethodGet, "/cluster/resources?type=vm", nil, &all); err != nil {
+		return nil, fmt.Errorf("vm-liste abrufen: %w", err)
+	}
+	return onlyQemu(all), nil
+}
+
 func (c *APIClient) VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error) {
 	var raw map[string]json.RawMessage
 	if err := c.request(ctx, http.MethodGet, vmPath(node, vmid), nil, &raw); err != nil {

@@ -146,14 +146,49 @@ make build      # Binary für den eigenen Rechner
 
 Vor jedem Push `make check` — die Pipeline prüft dasselbe.
 
+## Bestehende VMs nachziehen
+
+Die laufende Beobachtung greift nur bei neuen Aufgaben — bereits vorhandene
+VMs blieben also ungedrosselt. Für den Rollout gibt es deshalb einen
+einmaligen Durchlauf über alle VMs des Clusters:
+
+```bash
+pve-optimizer -config /etc/pve-optimizer/config.yaml -sweep
+```
+
+Erst mit `dry_run: true` laufen lassen und das Protokoll prüfen, dann scharf.
+Der Durchlauf beendet sich nach getaner Arbeit; eine VM, die sich nicht
+anpassen lässt, bricht ihn nicht ab, sondern wird am Ende gemeldet.
+
+## Sinnvolle Werte finden
+
+Die Werte hängen an der Hardware. Ein durchgerechnetes Beispiel für eine
+NVMe der 4. Generation mit rund zehn VMs steht in
+[`config.example.yaml`](config.example.yaml) unter `nvme-gen4`.
+
+Die Logik dahinter in Kurzform:
+
+- **Dauerrate** so wählen, dass alle VMs zusammen die Platte nicht
+  überfahren — bei zehn VMs also etwa ein Zehntel dessen, was die Platte
+  dauerhaft leistet, plus etwas Luft.
+- **Schreiben strenger begrenzen als Lesen.** Die Datenblattwerte gelten,
+  solange der SLC-Cache reicht; danach bricht die Rate deutlich ein.
+- **Burst großzügig, aber kurz.** Booten, ein Paket installieren, eine Datei
+  kopieren — all das dauert Sekunden und soll mit voller Geschwindigkeit
+  laufen. Erst dauerhafte Last fällt auf die Dauerrate zurück. Genau das
+  trifft Restores, also die Fälle, in denen eine VM den Node lahmlegt.
+- **IOPS aus der Praxis, nicht aus dem Datenblatt.** Die genannten
+  Hunderttausende gelten bei einem Strom mit hoher Warteschlange, nicht bei
+  zehn VMs mit gemischter Last.
+
 ## Grenzen
 
 - **Nur VMs, keine Container.** Proxmox kennt für LXC keine Drosselung je
   Mountpoint; dort ginge das nur über cgroup-Limits für den ganzen
   Container.
-- **Nur neue Aufgaben.** Beim ersten Start merkt sich der Dienst den
-  aktuellen Zeitpunkt und arbeitet die Historie nicht nach. Bestehende VMs
-  bleiben also unverändert.
+- **Im laufenden Betrieb nur neue Aufgaben.** Beim ersten Start merkt sich
+  der Dienst den aktuellen Zeitpunkt und arbeitet die Historie nicht nach —
+  für bestehende VMs ist `-sweep` da.
 
 ---
 

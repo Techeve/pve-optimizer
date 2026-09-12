@@ -66,6 +66,63 @@ pools:
     iops_rd: 10000
     iops_wr: 8000
 
+# ---------------------------------------------------------------------------
+# Vollständiges Beispiel: eine NVMe der 4. Generation, rund 10 VMs darauf
+# ---------------------------------------------------------------------------
+#
+# Ausgangslage — was so eine Platte in der Praxis leistet:
+#
+#   sequenziell lesen     ~7000 MB/s
+#   sequenziell schreiben ~5000 MB/s in der Spitze, aber nur solange der
+#                         SLC-Cache reicht; danach bleiben bei TLC real
+#                         1500–2500 MB/s übrig. Schreiben ist der Engpass.
+#   4K zufällig           Die Datenblätter nennen 600.000+ IOPS. Die gelten
+#                         bei einem einzelnen Strom mit hoher Warteschlange.
+#                         Bei zehn VMs mit gemischter Last sind 200.000 bis
+#                         400.000 IOPS realistisch.
+#
+# Die Rechnung: Die Dauerrate wird so gewählt, dass alle zehn VMs zusammen
+# die Platte nicht überfahren — 10 × 500 MB/s Lesen sind 5000 MB/s und damit
+# rund 70 % des Möglichen. Beim Schreiben liegt die Summe mit 10 × 200 MB/s
+# bei 2000 MB/s, also im Bereich dessen, was die Platte dauerhaft schafft.
+#
+# Der Burst ist der eigentliche Trick: Normale Arbeit — booten, ein Paket
+# installieren, eine Datei kopieren — dauert Sekunden und läuft mit voller
+# Geschwindigkeit. Erst wer länger als zehn Sekunden Vollgas gibt, fällt auf
+# die Dauerrate zurück. Genau das trifft Restores und durchgehende Last,
+# also die Fälle, in denen eine VM den ganzen Node lahmlegt.
+nvme-gen4:
+  # Lesen: 500 MB/s dauerhaft, 2000 MB/s für höchstens 10 Sekunden
+  mbps_rd: 500
+  mbps_rd_max: 2000
+  bps_rd_max_length: 10
+
+  # Schreiben: strenger, weil der SLC-Cache sonst volläuft
+  mbps_wr: 200
+  mbps_wr_max: 1000
+  bps_wr_max_length: 10
+
+  # IOPS: 10 × 15.000 = 150.000 dauerhaft, gut im Rahmen
+  iops_rd: 15000
+  iops_rd_max: 60000
+  iops_rd_max_length: 10
+
+  iops_wr: 8000
+  iops_wr_max: 30000
+  iops_wr_max_length: 10
+
+# Diese Werte sind ein belastbarer Startpunkt, keine Wahrheit. Wer es genau
+# wissen will, misst die eigene Platte und teilt das Ergebnis auf:
+#
+#   fio --name=lesen --filename=/pfad/testdatei --size=8G --rw=randread \
+#       --bs=4k --iodepth=32 --numjobs=4 --runtime=60 --time_based --direct=1
+#
+# Zwei Dinge, die die Rechnung verschieben:
+#   - ZFS kostet Leistung (Copy-on-Write, Prüfsummen, Kompression). Bei
+#     einem Pool aus mehreren Platten steigt die Summe dagegen wieder.
+#   - Nicht alle zehn VMs arbeiten gleichzeitig. Wer weiß, dass nur zwei
+#     davon dauerhaft Last erzeugen, darf die Dauerrate höher ansetzen.
+
 # Statt getrennt nach Lesen und Schreiben geht auch ein gemeinsames Limit
 # für beide Richtungen. Beides zusammen lehnt QEMU ab, deshalb prüft der
 # Dienst das beim Start und rührt an einer Platte, die bereits die andere
