@@ -59,15 +59,34 @@ defaults:          # gilt für jeden Pool ohne eigenes Profil
 
 pools:
   local-pool:
-    mbps_rd: 500
-    mbps_wr: 400
-    mbps_rd_max: 800   # kurzzeitige Spitze
+    mbps_rd: 500            # Dauerrate
+    mbps_rd_max: 800        # Spitze ...
+    bps_rd_max_length: 10   # ... für höchstens 10 Sekunden
     iops_rd: 20000
 ```
 
-Bekannte Schlüssel sind `mbps_rd`, `mbps_wr`, `mbps_rd_max`, `mbps_wr_max`,
-`iops_rd`, `iops_wr`, `iops_rd_max`, `iops_wr_max`. Ein weggelassener oder
-auf `0` gesetzter Schlüssel wird nicht geschrieben.
+### Die Schlüssel
+
+| Zweck | Durchsatz (MB/s) | IOPS |
+|---|---|---|
+| Dauerrate | `mbps_rd`, `mbps_wr` | `iops_rd`, `iops_wr` |
+| Spitze | `mbps_rd_max`, `mbps_wr_max` | `iops_rd_max`, `iops_wr_max` |
+| Dauer der Spitze (s) | `bps_rd_max_length`, `bps_wr_max_length` | `iops_rd_max_length`, `iops_wr_max_length` |
+| beide Richtungen gemeinsam | `mbps`, `mbps_max`, `bps_max_length` | `iops`, `iops_max`, `iops_max_length` |
+
+Zwei Fallstricke, die Proxmox hier mitbringt:
+
+**Die Dauer der Spitze heißt beim Durchsatz `bps_..._max_length`, nicht
+`mbps_...`.** Und sie gehört zwingend dazu: Ein `mbps_rd_max` ohne
+Längenangabe lässt QEMU nur eine Sekunde bursten, die Spitze verpufft also.
+
+**Gemeinsames und getrenntes Limit schließen sich aus.** `mbps` neben
+`mbps_rd` weist QEMU zurück. Der Dienst prüft das beim Start für jedes
+Profil und lässt an einer Platte, die bereits die andere Variante nutzt, die
+jeweilige Familie unangetastet — sonst würde eine einzige unpassende Platte
+die ganze Änderung scheitern lassen.
+
+Ein weggelassener oder auf `0` gesetzter Schlüssel wird nicht geschrieben.
 
 `defaults` ist Pflicht — ohne Standardprofil bliebe eine Platte auf einem
 unbekannten Pool ungedrosselt, und genau das soll nicht passieren. Ein

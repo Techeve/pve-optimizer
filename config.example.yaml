@@ -41,16 +41,38 @@ defaults:
 # Plattenwert, z. B. "local-pool" bei "local-pool:vm-100-disk-0".
 # Ein Wert von 0 oder ein weggelassener Schlüssel heißt: nicht setzen.
 pools:
+  # Mit Burst: kurze Lastspitzen dürfen über die Dauerrate hinausgehen.
+  # Wichtig: Zu jedem "_max" gehört die zugehörige Dauer, sonst burstet
+  # QEMU nur eine Sekunde und die Spitze bringt nichts. Die Dauer heißt
+  # beim Durchsatz "bps_..._max_length" — nicht "mbps_...".
   local-pool:
-    mbps_rd: 500
+    mbps_rd: 500 # Dauerrate
     mbps_wr: 400
-    mbps_rd_max: 800 # Spitze, die kurzzeitig erlaubt ist
+    mbps_rd_max: 800 # Spitze
     mbps_wr_max: 600
+    bps_rd_max_length: 10 # ... für höchstens 10 Sekunden
+    bps_wr_max_length: 10
     iops_rd: 20000
     iops_wr: 15000
+    iops_rd_max: 40000
+    iops_wr_max: 30000
+    iops_rd_max_length: 10
+    iops_wr_max_length: 10
 
+  # Ohne Burst: strikt die Dauerrate.
   rpool:
     mbps_rd: 300
     mbps_wr: 200
     iops_rd: 10000
     iops_wr: 8000
+
+# Statt getrennt nach Lesen und Schreiben geht auch ein gemeinsames Limit
+# für beide Richtungen. Beides zusammen lehnt QEMU ab, deshalb prüft der
+# Dienst das beim Start und rührt an einer Platte, die bereits die andere
+# Variante nutzt, die jeweilige Familie nicht an.
+#
+#  backup-store:
+#    mbps: 150
+#    mbps_max: 300
+#    bps_max_length: 5
+#    iops: 4000

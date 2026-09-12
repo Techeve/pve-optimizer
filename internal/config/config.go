@@ -136,6 +136,9 @@ func validateProfile(context string, profile limits.Profile) error {
 			return fmt.Errorf("%s.%s: wert darf nicht negativ sein", context, key)
 		}
 	}
+	if err := limits.CheckProfile(profile); err != nil {
+		return fmt.Errorf("%s: %w", context, err)
+	}
 	return nil
 }
 

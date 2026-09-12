@@ -8,11 +8,42 @@ import (
 	"strings"
 )
 
-// Keys, die Proxmox für die Drosselung einer Platte kennt. Die Reihenfolge
-// bestimmt, wie die Parameter an die VM-Config geschrieben werden.
-var Keys = []string{
-	"mbps_rd", "mbps_wr", "mbps_rd_max", "mbps_wr_max",
-	"iops_rd", "iops_wr", "iops_rd_max", "iops_wr_max",
+// Parameterfamilien, wie Proxmox sie kennt. Durchsatz und IOPS lassen sich
+// jeweils entweder gemeinsam für beide Richtungen begrenzen oder getrennt
+// nach Lesen und Schreiben — beides zusammen lehnt QEMU ab.
+//
+// Achtung bei der Benennung: Die Burst-Dauer heißt beim Durchsatz
+// "bps_..._max_length", nicht "mbps_...". Ohne sie bleibt ein gesetztes
+// "_max" praktisch wirkungslos, weil QEMU dann nur eine Sekunde burstet.
+var (
+	throughputCombined = []string{"mbps", "mbps_max", "bps_max_length"}
+	throughputSplit    = []string{
+		"mbps_rd", "mbps_wr", "mbps_rd_max", "mbps_wr_max",
+		"bps_rd_max_length", "bps_wr_max_length",
+	}
+	iopsCombined = []string{"iops", "iops_max", "iops_max_length"}
+	iopsSplit    = []string{
+		"iops_rd", "iops_wr", "iops_rd_max", "iops_wr_max",
+		"iops_rd_max_length", "iops_wr_max_length",
+	}
+)
+
+// Keys sind alle Parameter, die der Dienst setzen kann. Die Reihenfolge
+// bestimmt, wie sie in die VM-Config geschrieben werden.
+var Keys = concat(throughputCombined, throughputSplit, iopsCombined, iopsSplit)
+
+// Paare, die sich gegenseitig ausschließen.
+var exclusivePairs = []struct{ combined, split []string }{
+	{throughputCombined, throughputSplit},
+	{iopsCombined, iopsSplit},
+}
+
+func concat(lists ...[]string) []string {
+	var all []string
+	for _, list := range lists {
+		all = append(all, list...)
+	}
+	return all
 }
 
 // Profile sind die Zielwerte eines Speicherpools. Ein Wert von 0 bedeutet
@@ -70,11 +101,17 @@ func ParseDisk(key, value string) (Disk, bool) {
 // Missing liefert die Begrenzungen aus dem Profil, die an der Platte noch
 // fehlen. Bereits gesetzte Werte bleiben unangetastet — der Dienst ergänzt
 // nur, er überschreibt keine bewusst abweichenden Einstellungen.
+//
+// Familien, deren Gegenstück an der Platte schon gesetzt ist, bleiben außen
+// vor: Ein kombiniertes "mbps" neben einem ergänzten "mbps_rd" würde QEMU
+// zurückweisen und die ganze Änderung scheitern lassen.
 func Missing(disk Disk, profile Profile) map[string]int {
+	blocked := blockedKeys(disk)
+
 	missing := map[string]int{}
 	for _, key := range Keys {
 		target := profile[key]
-		if target <= 0 {
+		if target <= 0 || blocked[key] {
 			continue
 		}
 		if _, alreadySet := disk.Options[key]; alreadySet {
@@ -83,6 +120,56 @@ func Missing(disk Disk, profile Profile) map[string]int {
 		missing[key] = target
 	}
 	return missing
+}
+
+// blockedKeys sammelt die Parameter, die wegen einer bereits an der Platte
+// gesetzten Gegenfamilie nicht ergänzt werden dürfen.
+func blockedKeys(disk Disk) map[string]bool {
+	blocked := map[string]bool{}
+	block := func(keys []string) {
+		for _, key := range keys {
+			blocked[key] = true
+		}
+	}
+
+	for _, pair := range exclusivePairs {
+		if anySet(disk.Options, pair.combined) {
+			block(pair.split)
+		}
+		if anySet(disk.Options, pair.split) {
+			block(pair.combined)
+		}
+	}
+	return blocked
+}
+
+// CheckProfile weist Profile zurück, die ein kombiniertes Limit mit
+// getrennten Lese-/Schreibwerten mischen — QEMU nimmt beides zusammen
+// nicht an, und der Dienst würde bei jeder Platte scheitern.
+func CheckProfile(profile Profile) error {
+	options := make(map[string]string, len(profile))
+	for key, value := range profile {
+		if value > 0 {
+			options[key] = ""
+		}
+	}
+
+	for _, pair := range exclusivePairs {
+		if anySet(options, pair.combined) && anySet(options, pair.split) {
+			return fmt.Errorf("%s und %s lassen sich nicht zusammen setzen",
+				strings.Join(pair.combined, "/"), strings.Join(pair.split, "/"))
+		}
+	}
+	return nil
+}
+
+func anySet[V any](options map[string]V, keys []string) bool {
+	for _, key := range keys {
+		if _, found := options[key]; found {
+			return true
+		}
+	}
+	return false
 }
 
 // Apply baut den Config-Wert für die Platte samt der ergänzten Begrenzungen.
