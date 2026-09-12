@@ -88,6 +88,23 @@ die ganze Änderung scheitern lassen.
 
 Ein weggelassener oder auf `0` gesetzter Schlüssel wird nicht geschrieben.
 
+### Die Burst-Dauer ist in der Weboberfläche unsichtbar
+
+Proxmox bietet unter *Disk → Bandwidth* nur die Dauer- und die Spitzenrate
+an — Felder für `_max_length` gibt es dort nicht. Die Werte, die dieser
+Dienst setzt, sind in der Oberfläche also **nicht zu sehen**.
+
+Sie gehen dabei aber auch nicht verloren: Die Oberfläche liest beim
+Bearbeiten alle Parameter einer Platte ein und schreibt sie unverändert
+zurück, auch die, für die sie kein Eingabefeld hat. An den Bandbreiten einer
+Platte lässt sich also gefahrlos über die Oberfläche schrauben.
+
+Nachsehen lassen sie sich auf dem Node:
+
+```bash
+qm config 100 | grep scsi0
+```
+
 `defaults` ist Pflicht — ohne Standardprofil bliebe eine Platte auf einem
 unbekannten Pool ungedrosselt, und genau das soll nicht passieren. Ein
 Tippfehler in einem Schlüssel lässt den Dienst beim Start abbrechen, statt
