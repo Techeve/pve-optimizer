@@ -1,0 +1,23 @@
+[Unit]
+Description=pve-optimizer — ergaenzt IO-Begrenzungen neuer Proxmox-VMs
+Documentation=https://gitlab.techeve.de/techeve/pve-optimizer
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pve-optimizer -config /etc/pve-optimizer/config.yaml
+Restart=on-failure
+RestartSec=10s
+
+# Nur fuer mode: api — das Token-Secret gehoert nicht in die Konfiguration.
+# Datei mit  PVE_OPTIMIZER_TOKEN_SECRET=...  anlegen, Rechte 0600.
+EnvironmentFile=-/etc/pve-optimizer/secret.env
+
+StateDirectory=pve-optimizer
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

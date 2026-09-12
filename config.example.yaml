@@ -1,0 +1,56 @@
+# pve-optimizer — Beispielkonfiguration
+#
+# Kopieren nach /etc/pve-optimizer/config.yaml und anpassen.
+
+# Betriebsart:
+#   local  ruft pvesh auf dem Node auf, auf dem der Dienst läuft.
+#          Kein Token nötig, dafür auf jedem Node installieren.
+#   api    spricht über HTTPS mit der Cluster-API und sieht alle Nodes.
+#          Einmal installieren, braucht einen API-Token.
+mode: local
+
+# Wie oft die Aufgabenliste abgefragt wird.
+poll_interval: 30s
+
+# Nur protokollieren, nichts schreiben — zum Ausprobieren.
+dry_run: false
+
+# Merkt sich, bis wohin die Aufgaben abgearbeitet sind.
+state_file: /var/lib/pve-optimizer/state.json
+
+# Nur für mode: api.
+api:
+  url: https://pve.example.com:8006
+  token_id: root@pam!pve-optimizer
+  # Das Secret gehört nicht hierher, sondern in die Umgebungsvariable
+  # PVE_OPTIMIZER_TOKEN_SECRET (siehe systemd-Unit im README).
+  token_secret: ""
+  # Nur setzen, wenn Proxmox ein selbstsigniertes Zertifikat ausliefert.
+  insecure_skip_verify: false
+
+# Greift für jeden Speicherpool, der unten nicht aufgeführt ist.
+# Ohne diesen Abschnitt startet der Dienst nicht — ein unbekannter Pool
+# soll nie ungedrosselt bleiben.
+defaults:
+  mbps_rd: 200 # Dauerrate Lesen in MB/s
+  mbps_wr: 150 # Dauerrate Schreiben in MB/s
+  iops_rd: 5000
+  iops_wr: 3000
+
+# Profile je Speicherpool. Der Pool ist der Name vor dem Doppelpunkt im
+# Plattenwert, z. B. "local-pool" bei "local-pool:vm-100-disk-0".
+# Ein Wert von 0 oder ein weggelassener Schlüssel heißt: nicht setzen.
+pools:
+  local-pool:
+    mbps_rd: 500
+    mbps_wr: 400
+    mbps_rd_max: 800 # Spitze, die kurzzeitig erlaubt ist
+    mbps_wr_max: 600
+    iops_rd: 20000
+    iops_wr: 15000
+
+  rpool:
+    mbps_rd: 300
+    mbps_wr: 200
+    iops_rd: 10000
+    iops_wr: 8000
