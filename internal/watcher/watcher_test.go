@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -17,12 +18,17 @@ import (
 // fakeClient ersetzt Proxmox im Test und merkt sich, was geschrieben wurde.
 type fakeClient struct {
 	tasks   []proxmox.Task
+	vms     []proxmox.VM
 	configs map[int]map[string]string
 	updates map[int]map[string]string
 }
 
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
+}
+
+func (f *fakeClient) ListVMs(context.Context) ([]proxmox.VM, error) {
+	return f.vms, nil
 }
 
 func (f *fakeClient) VMConfig(_ context.Context, _ string, vmid int) (map[string]string, error) {
@@ -229,5 +235,169 @@ func TestCheckOnceVerarbeitetAufgabeNurEinmal(t *testing.T) {
 	}
 	if state.LastEndTime != 1000 {
 		t.Errorf("LastEndTime = %d, erwartet 1000", state.LastEndTime)
+	}
+}
+
+func TestSweepGehtAlleVorhandenenVMsDurch(t *testing.T) {
+	client := &fakeClient{
+		vms: []proxmox.VM{
+			{VMID: 200, Node: "vmh02", Name: "ohne-limits", Type: "qemu"},
+			{VMID: 201, Node: "vmh03", Name: "schon-begrenzt", Type: "qemu"},
+		},
+		configs: map[int]map[string]string{
+			200: {"scsi0": "local-pool:vm-200-disk-0,size=32G"},
+			201: {"scsi0": "local-pool:vm-201-disk-0,size=32G,mbps_rd=10,mbps_wr=10"},
+		},
+	}
+
+	w := newTestWatcher(t, testConfig(t, false), client)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+
+	if _, found := client.updates[200]; !found {
+		t.Error("vm 200 haette angepasst werden muessen")
+	}
+	if _, found := client.updates[201]; found {
+		t.Error("vm 201 war bereits begrenzt und darf nicht angefasst werden")
+	}
+}
+
+func TestSweepDryRunSchreibtNicht(t *testing.T) {
+	client := &fakeClient{
+		vms:     []proxmox.VM{{VMID: 202, Node: "vmh02", Type: "qemu"}},
+		configs: map[int]map[string]string{202: {"scsi0": "local-pool:vm-202-disk-0,size=32G"}},
+	}
+
+	w := newTestWatcher(t, testConfig(t, true), client)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	if len(client.updates) != 0 {
+		t.Errorf("dry_run darf nichts schreiben, bekommen: %v", client.updates)
+	}
+}
+
+// Laeuft der Dienst auf jedem Node, darf jede Instanz nur ihre eigenen VMs
+// anfassen — sonst nehmen sich mehrere dieselbe VM gleichzeitig vor.
+func TestNurEigenerNode(t *testing.T) {
+	cfg := testConfig(t, false)
+	restrict := true
+	cfg.OnlyOwnNode = &restrict
+	cfg.Node = "vmh03"
+
+	client := &fakeClient{
+		tasks: []proxmox.Task{
+			{UPID: "UPID:f", Node: "vmh02", Type: "qmrestore", ID: "300", Status: "OK", EndTime: 1000},
+			{UPID: "UPID:g", Node: "vmh03", Type: "qmrestore", ID: "301", Status: "OK", EndTime: 1000},
+		},
+		vms: []proxmox.VM{
+			{VMID: 300, Node: "vmh02", Type: "qemu"},
+			{VMID: 301, Node: "vmh03", Type: "qemu"},
+		},
+		configs: map[int]map[string]string{
+			300: {"scsi0": "local-pool:vm-300-disk-0,size=32G"},
+			301: {"scsi0": "local-pool:vm-301-disk-0,size=32G"},
+		},
+	}
+
+	w := newTestWatcher(t, cfg, client)
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if _, found := client.updates[300]; found {
+		t.Error("vm auf einem fremden node darf nicht angefasst werden")
+	}
+	if _, found := client.updates[301]; !found {
+		t.Error("vm auf dem eigenen node haette angepasst werden muessen")
+	}
+
+	client.updates = nil
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+	if _, found := client.updates[300]; found {
+		t.Error("Sweep darf fremde nodes nicht anfassen")
+	}
+	if _, found := client.updates[301]; !found {
+		t.Error("Sweep haette den eigenen node anpassen muessen")
+	}
+}
+
+// failingClient laesst das Schreiben scheitern — wie ein kurzzeitig
+// schreibgeschuetztes /etc/pve oder ein Aussetzer der API.
+type failingClient struct {
+	fakeClient
+	failFor map[int]bool
+}
+
+func (f *failingClient) UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error {
+	if f.failFor[vmid] {
+		return errors.New("read-only file system")
+	}
+	return f.fakeClient.UpdateVMConfig(ctx, node, vmid, fields)
+}
+
+// Eine fehlgeschlagene Aufgabe darf nicht als erledigt gelten: Sonst bliebe
+// die VM dauerhaft ungedrosselt, obwohl der Fehler nur voruebergehend war.
+func TestFehlgeschlageneAufgabeWirdErneutVersucht(t *testing.T) {
+	client := &failingClient{
+		fakeClient: fakeClient{
+			tasks: []proxmox.Task{
+				{UPID: "UPID:x", Node: "vmh03", Type: "qmcreate", ID: "400", Status: "OK", EndTime: 1000},
+			},
+			configs: map[int]map[string]string{
+				400: {"scsi0": "local-pool:vm-400-disk-0,size=32G"},
+			},
+		},
+		failFor: map[int]bool{400: true},
+	}
+
+	cfg := testConfig(t, false)
+	w := newTestWatcher(t, cfg, client)
+
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if w.state.LastEndTime >= 1000 {
+		t.Fatalf("LastEndTime = %d — die fehlgeschlagene Aufgabe gilt faelschlich als erledigt", w.state.LastEndTime)
+	}
+
+	// Beim naechsten Durchlauf klappt das Schreiben.
+	client.failFor = nil
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("zweiter checkOnce() = %v", err)
+	}
+	if _, found := client.updates[400]; !found {
+		t.Error("die aufgabe haette erneut versucht werden muessen")
+	}
+	if w.state.LastEndTime != 1000 {
+		t.Errorf("LastEndTime = %d, erwartet 1000 nach erfolgreichem Durchlauf", w.state.LastEndTime)
+	}
+}
+
+// Eine spaetere erfolgreiche Aufgabe darf eine frueher fehlgeschlagene
+// nicht ueberholen.
+func TestErfolgUeberholtFehlschlagNicht(t *testing.T) {
+	client := &failingClient{
+		fakeClient: fakeClient{
+			tasks: []proxmox.Task{
+				{UPID: "UPID:y", Node: "vmh03", Type: "qmcreate", ID: "401", Status: "OK", EndTime: 1000},
+				{UPID: "UPID:z", Node: "vmh03", Type: "qmcreate", ID: "402", Status: "OK", EndTime: 2000},
+			},
+			configs: map[int]map[string]string{
+				401: {"scsi0": "local-pool:vm-401-disk-0,size=32G"},
+				402: {"scsi0": "local-pool:vm-402-disk-0,size=32G"},
+			},
+		},
+		failFor: map[int]bool{401: true},
+	}
+
+	w := newTestWatcher(t, testConfig(t, false), client)
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+	if w.state.LastEndTime >= 1000 {
+		t.Errorf("LastEndTime = %d — vm 402 hat die fehlgeschlagene vm 401 ueberholt", w.state.LastEndTime)
 	}
 }

@@ -21,6 +21,7 @@ func main() {
 	configPath := flag.String("config", "/etc/pve-optimizer/config.yaml", "Pfad zur Konfigurationsdatei")
 	showVersion := flag.Bool("version", false, "Version ausgeben und beenden")
 	debug := flag.Bool("debug", false, "ausführliche Protokollierung")
+	sweep := flag.Bool("sweep", false, "einmalig alle vorhandenen VMs anpassen und beenden")
 	flag.Parse()
 
 	if *showVersion {
@@ -28,13 +29,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *debug); err != nil {
+	if err := run(*configPath, *debug, *sweep); err != nil {
 		slog.Error("dienst beendet", "fehler", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string, debug bool) error {
+func run(configPath string, debug, sweep bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -55,6 +56,9 @@ func run(configPath string, debug bool) error {
 	defer stop()
 
 	log.Info("pve-optimizer gestartet", "version", version.Version, "build", version.Build)
+	if sweep {
+		return w.Sweep(ctx)
+	}
 	return w.Run(ctx)
 }
 

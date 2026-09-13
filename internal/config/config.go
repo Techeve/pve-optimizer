@@ -29,13 +29,23 @@ const (
 const tokenSecretEnv = "PVE_OPTIMIZER_TOKEN_SECRET"
 
 type Config struct {
-	Mode         Mode                      `yaml:"mode"`
-	PollInterval time.Duration             `yaml:"poll_interval"`
-	DryRun       bool                      `yaml:"dry_run"`
-	StateFile    string                    `yaml:"state_file"`
-	API          API                       `yaml:"api"`
-	Defaults     limits.Profile            `yaml:"defaults"`
-	Pools        map[string]limits.Profile `yaml:"pools"`
+	Mode         Mode          `yaml:"mode"`
+	PollInterval time.Duration `yaml:"poll_interval"`
+	DryRun       bool          `yaml:"dry_run"`
+	StateFile    string        `yaml:"state_file"`
+
+	// OnlyOwnNode beschränkt den Dienst auf die VMs des Nodes, auf dem er
+	// läuft. Nötig, wenn er auf jedem Node läuft: Auch im local-Modus
+	// greift pvesh clusterweit zu, ohne diese Grenze würden sich mehrere
+	// Instanzen dieselben VMs vornehmen.
+	OnlyOwnNode *bool `yaml:"only_own_node"`
+	// Node überschreibt den eigenen Node-Namen. Leer bedeutet: der
+	// Hostname, unter dem der Node im Cluster geführt wird.
+	Node string `yaml:"node"`
+
+	API      API                       `yaml:"api"`
+	Defaults limits.Profile            `yaml:"defaults"`
+	Pools    map[string]limits.Profile `yaml:"pools"`
 }
 
 type API struct {
@@ -57,7 +67,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("konfiguration auswerten: %w", err)
 	}
 
-	applyDefaults(&cfg)
+	if err := applyDefaults(&cfg); err != nil {
+		return nil, err
+	}
 
 	if secret := os.Getenv(tokenSecretEnv); secret != "" {
 		cfg.API.TokenSecret = secret
@@ -69,7 +81,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func applyDefaults(cfg *Config) {
+func applyDefaults(cfg *Config) error {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeLocal
 	}
@@ -82,6 +94,23 @@ func applyDefaults(cfg *Config) {
 	if cfg.Pools == nil {
 		cfg.Pools = map[string]limits.Profile{}
 	}
+
+	// Wer lokal läuft, läuft typischerweise auf jedem Node — dann muss sich
+	// jede Instanz auf ihren eigenen beschränken. Über die Cluster-API
+	// genügt dagegen eine Installation für alle.
+	if cfg.OnlyOwnNode == nil {
+		restrict := cfg.Mode == ModeLocal
+		cfg.OnlyOwnNode = &restrict
+	}
+
+	if *cfg.OnlyOwnNode && cfg.Node == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return fmt.Errorf("eigenen node-namen ermitteln: %w", err)
+		}
+		cfg.Node = hostname
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
@@ -136,15 +165,34 @@ func validateProfile(context string, profile limits.Profile) error {
 			return fmt.Errorf("%s.%s: wert darf nicht negativ sein", context, key)
 		}
 	}
+	if err := limits.CheckProfile(profile); err != nil {
+		return fmt.Errorf("%s: %w", context, err)
+	}
 	return nil
 }
 
-// ProfileFor liefert das Profil des Speicherpools und, falls keines
-// hinterlegt ist, die Vorgabe. Der zweite Rückgabewert sagt, ob ein eigenes
-// Profil gefunden wurde — nützlich fürs Protokoll.
-func (c *Config) ProfileFor(storage string) (limits.Profile, bool) {
-	if profile, found := c.Pools[storage]; found {
-		return profile, true
+// ProfileFor liefert das Profil für einen Speicherpool auf einem Node.
+// Gesucht wird in dieser Reihenfolge:
+//
+//	"<node>:<pool>"  genau dieser Pool auf genau diesem Node
+//	"<pool>"         der Pool auf allen Nodes
+//	defaults         alles Übrige
+//
+// Die erste Stufe ist nötig, weil gleichnamige Pools auf verschiedenen
+// Nodes auf völlig unterschiedlicher Hardware liegen können. Der zweite
+// Rückgabewert nennt die Fundstelle — nützlich fürs Protokoll.
+func (c *Config) ProfileFor(node, storage string) (limits.Profile, string) {
+	if profile, found := c.Pools[node+":"+storage]; found {
+		return profile, node + ":" + storage
 	}
-	return c.Defaults, false
+	if profile, found := c.Pools[storage]; found {
+		return profile, storage
+	}
+	return c.Defaults, "defaults"
+}
+
+// RestrictedToOwnNode meldet, ob sich der Dienst auf den eigenen Node
+// beschränkt.
+func (c *Config) RestrictedToOwnNode() bool {
+	return c.OnlyOwnNode != nil && *c.OnlyOwnNode
 }

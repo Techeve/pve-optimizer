@@ -42,6 +42,19 @@ Node ausgerollt und aktualisiert werden. `api` sieht den ganzen Cluster aus
 einer Installation heraus und läuft auch dann weiter, wenn ein Node neu
 startet.
 
+### Achtung bei mehreren Instanzen
+
+Auch im `local`-Modus greift `pvesh` **clusterweit** zu — eine Instanz sieht
+also alle Nodes. Läuft der Dienst auf jedem Node, müssen sich die Instanzen
+deshalb aufteilen, sonst nehmen sich mehrere dieselbe VM gleichzeitig vor.
+
+Dafür sorgt `only_own_node`, das im `local`-Modus **von selbst aktiv** ist:
+Jede Instanz bearbeitet nur die VMs ihres eigenen Nodes. Der Node-Name kommt
+aus dem Hostnamen und lässt sich mit `node:` überschreiben.
+
+Im `api`-Modus ist die Option aus — dort genügt eine Installation für den
+ganzen Cluster.
+
 ## Konfiguration
 
 Vorlage: [`config.example.yaml`](config.example.yaml).
@@ -59,15 +72,70 @@ defaults:          # gilt für jeden Pool ohne eigenes Profil
 
 pools:
   local-pool:
-    mbps_rd: 500
-    mbps_wr: 400
-    mbps_rd_max: 800   # kurzzeitige Spitze
+    mbps_rd: 500            # Dauerrate
+    mbps_rd_max: 800        # Spitze ...
+    bps_rd_max_length: 10   # ... für höchstens 10 Sekunden
     iops_rd: 20000
 ```
 
-Bekannte Schlüssel sind `mbps_rd`, `mbps_wr`, `mbps_rd_max`, `mbps_wr_max`,
-`iops_rd`, `iops_wr`, `iops_rd_max`, `iops_wr_max`. Ein weggelassener oder
-auf `0` gesetzter Schlüssel wird nicht geschrieben.
+### Die Schlüssel
+
+| Zweck | Durchsatz (MB/s) | IOPS |
+|---|---|---|
+| Dauerrate | `mbps_rd`, `mbps_wr` | `iops_rd`, `iops_wr` |
+| Spitze | `mbps_rd_max`, `mbps_wr_max` | `iops_rd_max`, `iops_wr_max` |
+| Dauer der Spitze (s) | `bps_rd_max_length`, `bps_wr_max_length` | `iops_rd_max_length`, `iops_wr_max_length` |
+| beide Richtungen gemeinsam | `mbps`, `mbps_max`, `bps_max_length` | `iops`, `iops_max`, `iops_max_length` |
+
+Zwei Fallstricke, die Proxmox hier mitbringt:
+
+**Die Dauer der Spitze heißt beim Durchsatz `bps_..._max_length`, nicht
+`mbps_...`.** Und sie gehört zwingend dazu: Ein `mbps_rd_max` ohne
+Längenangabe lässt QEMU nur eine Sekunde bursten, die Spitze verpufft also.
+
+**Gemeinsames und getrenntes Limit schließen sich aus.** `mbps` neben
+`mbps_rd` weist QEMU zurück. Der Dienst prüft das beim Start für jedes
+Profil und lässt an einer Platte, die bereits die andere Variante nutzt, die
+jeweilige Familie unangetastet — sonst würde eine einzige unpassende Platte
+die ganze Änderung scheitern lassen.
+
+Ein weggelassener oder auf `0` gesetzter Schlüssel wird nicht geschrieben.
+
+### Profile je Node
+
+Ein Schlüssel unter `pools:` darf auch `<node>:<pool>` lauten. Das braucht
+man, wenn gleichnamige Pools auf verschiedenen Nodes auf unterschiedlicher
+Hardware liegen — etwa eine Gen4-NVMe auf dem einen und eine langsamere
+QLC-Platte auf dem anderen:
+
+```yaml
+pools:
+  local-pool:              # gilt für alle Nodes
+    mbps_wr: 200
+  vmh03:local-pool:        # ... außer auf vmh03
+    mbps_wr: 80
+```
+
+Gesucht wird von speziell nach allgemein: erst `<node>:<pool>`, dann
+`<pool>`, zuletzt `defaults`. Welches Profil gegriffen hat, steht im
+Protokoll.
+
+### Die Burst-Dauer ist in der Weboberfläche unsichtbar
+
+Proxmox bietet unter *Disk → Bandwidth* nur die Dauer- und die Spitzenrate
+an — Felder für `_max_length` gibt es dort nicht. Die Werte, die dieser
+Dienst setzt, sind in der Oberfläche also **nicht zu sehen**.
+
+Sie gehen dabei aber auch nicht verloren: Die Oberfläche liest beim
+Bearbeiten alle Parameter einer Platte ein und schreibt sie unverändert
+zurück, auch die, für die sie kein Eingabefeld hat. An den Bandbreiten einer
+Platte lässt sich also gefahrlos über die Oberfläche schrauben.
+
+Nachsehen lassen sie sich auf dem Node:
+
+```bash
+qm config 100 | grep scsi0
+```
 
 `defaults` ist Pflicht — ohne Standardprofil bliebe eine Platte auf einem
 unbekannten Pool ungedrosselt, und genau das soll nicht passieren. Ein
@@ -110,14 +178,49 @@ make build      # Binary für den eigenen Rechner
 
 Vor jedem Push `make check` — die Pipeline prüft dasselbe.
 
+## Bestehende VMs nachziehen
+
+Die laufende Beobachtung greift nur bei neuen Aufgaben — bereits vorhandene
+VMs blieben also ungedrosselt. Für den Rollout gibt es deshalb einen
+einmaligen Durchlauf über alle VMs des Clusters:
+
+```bash
+pve-optimizer -config /etc/pve-optimizer/config.yaml -sweep
+```
+
+Erst mit `dry_run: true` laufen lassen und das Protokoll prüfen, dann scharf.
+Der Durchlauf beendet sich nach getaner Arbeit; eine VM, die sich nicht
+anpassen lässt, bricht ihn nicht ab, sondern wird am Ende gemeldet.
+
+## Sinnvolle Werte finden
+
+Die Werte hängen an der Hardware. Ein durchgerechnetes Beispiel für eine
+NVMe der 4. Generation mit rund zehn VMs steht in
+[`config.example.yaml`](config.example.yaml) unter `nvme-gen4`.
+
+Die Logik dahinter in Kurzform:
+
+- **Dauerrate** so wählen, dass alle VMs zusammen die Platte nicht
+  überfahren — bei zehn VMs also etwa ein Zehntel dessen, was die Platte
+  dauerhaft leistet, plus etwas Luft.
+- **Schreiben strenger begrenzen als Lesen.** Die Datenblattwerte gelten,
+  solange der SLC-Cache reicht; danach bricht die Rate deutlich ein.
+- **Burst großzügig, aber kurz.** Booten, ein Paket installieren, eine Datei
+  kopieren — all das dauert Sekunden und soll mit voller Geschwindigkeit
+  laufen. Erst dauerhafte Last fällt auf die Dauerrate zurück. Genau das
+  trifft Restores, also die Fälle, in denen eine VM den Node lahmlegt.
+- **IOPS aus der Praxis, nicht aus dem Datenblatt.** Die genannten
+  Hunderttausende gelten bei einem Strom mit hoher Warteschlange, nicht bei
+  zehn VMs mit gemischter Last.
+
 ## Grenzen
 
 - **Nur VMs, keine Container.** Proxmox kennt für LXC keine Drosselung je
   Mountpoint; dort ginge das nur über cgroup-Limits für den ganzen
   Container.
-- **Nur neue Aufgaben.** Beim ersten Start merkt sich der Dienst den
-  aktuellen Zeitpunkt und arbeitet die Historie nicht nach. Bestehende VMs
-  bleiben also unverändert.
+- **Im laufenden Betrieb nur neue Aufgaben.** Beim ersten Start merkt sich
+  der Dienst den aktuellen Zeitpunkt und arbeitet die Historie nicht nach —
+  für bestehende VMs ist `-sweep` da.
 
 ---
 

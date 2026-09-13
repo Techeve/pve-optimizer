@@ -13,10 +13,32 @@ import (
 type Client interface {
 	// RecentTasks liefert die jüngsten Aufgaben des Clusters.
 	RecentTasks(ctx context.Context) ([]Task, error)
+	// ListVMs liefert alle VMs des Clusters, Container ausgenommen.
+	ListVMs(ctx context.Context) ([]VM, error)
 	// VMConfig liefert die Konfiguration einer VM als Schlüssel-Wert-Paare.
 	VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error)
 	// UpdateVMConfig schreibt die übergebenen Felder in die VM-Konfiguration.
 	UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error
+}
+
+// VM ist ein Gast aus der Ressourcenliste des Clusters.
+type VM struct {
+	VMID int    `json:"vmid"`
+	Node string `json:"node"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// onlyQemu wirft Container heraus: Proxmox kennt für LXC keine Drosselung
+// je Mountpoint.
+func onlyQemu(all []VM) []VM {
+	var vms []VM
+	for _, vm := range all {
+		if vm.Type == "qemu" {
+			vms = append(vms, vm)
+		}
+	}
+	return vms
 }
 
 // Task ist eine Proxmox-Aufgabe, so weit der Dienst sie auswertet.
