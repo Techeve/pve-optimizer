@@ -180,9 +180,16 @@ release:
         --description changelog-snippet.md \
         $ASSET_LINKS
     - |
-      if [ -z "$RELEASE_TOKEN" ]; then
-        echo "WARNUNG: CI-Variable RELEASE_TOKEN fehlt — VERSION/CHANGELOG.md"
-        echo "werden nicht nach develop zurueckgeschrieben."
+      # Auch den Platzhalter abfangen, den gitlab-repo-setup anlegt: Er ist
+      # nicht leer, taugt aber nicht zur Anmeldung. Ohne diese Prüfung
+      # scheitert der Push mit exit 128 und färbt die Pipeline rot, obwohl
+      # das Release längst erstellt ist.
+      if [ -z "$RELEASE_TOKEN" ] || [ "$RELEASE_TOKEN" = "CHANGE_ME" ]; then
+        echo "HINWEIS: CI-Variable RELEASE_TOKEN ist nicht gesetzt (Wert:"
+        echo "'${RELEASE_TOKEN:-leer}'). Das Release ist erstellt, nur VERSION"
+        echo "und CHANGELOG.md werden nicht nach develop zurueckgeschrieben."
+        echo "Zum Aktivieren: Project Access Token mit write_repository als"
+        echo "RELEASE_TOKEN hinterlegen."
         exit 0
       fi
       git fetch --quiet origin develop
