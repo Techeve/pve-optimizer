@@ -53,14 +53,7 @@ defaults:
 # Plattenwert, z. B. "local-pool" bei "local-pool:vm-100-disk-0".
 # Ein Wert von 0 oder ein weggelassener Schlüssel heißt: nicht setzen.
 #
-# Ein Schlüssel darf auch "<node>:<pool>" lauten. Das ist der Fall für
-# gleichnamige Pools, die auf verschiedenen Nodes auf unterschiedlicher
-# Hardware liegen — etwa eine Gen4-NVMe auf dem einen und eine langsamere
-# QLC-Platte auf dem anderen. Gesucht wird in dieser Reihenfolge:
-#
-#   vmh03:local-pool   genau dieser Pool auf genau diesem Node
-#   local-pool         der Pool auf allen Nodes
-#   defaults           alles Übrige
+# Abweichungen einzelner Nodes stehen weiter unten unter "nodes:".
 pools:
   # Mit Burst: kurze Lastspitzen dürfen über die Dauerrate hinausgehen.
   # Wichtig: Zu jedem "_max" gehört die zugehörige Dauer, sonst burstet
@@ -86,6 +79,112 @@ pools:
     mbps_wr: 200
     iops_rd: 10000
     iops_wr: 8000
+
+
+# ---------------------------------------------------------------------------
+# Regeln
+# ---------------------------------------------------------------------------
+#
+# Jede Regel prüft einen Punkt und trägt nach, was fehlt. Bereits gesetzte
+# Werte bleiben unangetastet — der Dienst ergänzt nur, er korrigiert nicht.
+#
+# Jede Regel hat einen Modus:
+#
+#   off       die Regel läuft nicht
+#   report    die Regel protokolliert, was sie ergänzen würde, schreibt
+#             aber nichts — der Weg, eine Regel erst einmal zu beobachten
+#   enforce   die Regel schreibt
+#
+# Kurzform ist der Modus allein ("discard: enforce"), Langform eine
+# Zuordnung mit "mode" und den Optionen der Regel.
+#
+# Vorgabe ohne diesen Abschnitt: io_limits ist scharf, alles Weitere aus.
+# dry_run oben senkt jede scharfe Regel auf "report" ab.
+#
+# In dieser Vorlage stehen alle Regeln außer der IO-Begrenzung auf
+# "report": erst ins Protokoll schauen, was sie an den eigenen VMs täten,
+# dann scharf schalten.
+rules:
+  # Die IO-Begrenzung aus den Profilen oben.
+  io_limits: enforce
+
+  # Gelöschte Blöcke an den Speicher zurückgeben. Ohne das wächst eine
+  # dünn bereitgestellte Platte immer weiter, auch wenn im Gast
+  # aufgeräumt wird. Ohne "pools" gilt die Regel für alle.
+  discard:
+    mode: report
+    pools: [local-pool]
+
+  # Dem Gast melden, dass die Platte nicht dreht. Linux und Windows
+  # schalten daraufhin die Optimierungen für Magnetplatten ab und
+  # schicken von sich aus TRIM-Befehle. virtio-blk kennt das Kennzeichen
+  # nicht und wird übersprungen.
+  ssd:
+    mode: report
+    pools: [local-pool]
+
+  # Eigener Thread je Platte statt alles über den Haupt-Thread von QEMU.
+  # Am SCSI-Bus geht das nur mit scsihw: virtio-scsi-single — sonst wird
+  # die Platte übersprungen. Den Controller stellt der Dienst nicht um,
+  # das ist ein Eingriff, nach dem manches Windows nicht mehr bootet.
+  iothread: report
+
+  # Den QEMU-Gast-Agenten erlauben. Ohne ihn ist ein Herunterfahren nur
+  # ein Druck auf den Ausschalter, und beim Backup fehlt das Einfrieren
+  # des Dateisystems — die Sicherung ist dann nur so konsistent wie nach
+  # einem Stromausfall. Im Gast muss der Agent zusätzlich installiert
+  # sein; ist er nicht da, ändert sich nichts.
+  guest_agent:
+    mode: report
+    # Nach einem Klon oder einer Verschiebung im Gast aufräumen lassen.
+    fstrim_cloned_disks: true
+
+  # Den Start nach einem Neustart des Nodes staffeln: "up" ist der
+  # Abstand, den Proxmox nach dieser VM einhält, bevor die nächste
+  # startet. Ohne das fahren alle automatisch startenden VMs gleichzeitig
+  # hoch und erzeugen genau die Lastspitze, gegen die die IO-Begrenzung
+  # sonst arbeitet.
+  #
+  # Angefasst werden nur VMs, die ohnehin automatisch mitstarten. Ob eine
+  # VM mitstarten soll, entscheidet der Betreiber — eine fehlende Angabe
+  # ist hier keine vergessene Einstellung.
+  startup:
+    mode: report
+    up: 30s
+
+# ---------------------------------------------------------------------------
+# Abweichungen je Node
+# ---------------------------------------------------------------------------
+#
+# Alles oben gilt clusterweit. Hier steht, was auf einzelnen Nodes anders
+# ist — genannt wird nur das Abweichende, der Rest bleibt wie oben.
+#
+# Für Regeln gilt dabei: Wer nur den Modus nennt, behält deren übrige
+# Optionen aus dem allgemeinen Abschnitt.
+#
+# Gesucht wird ein Profil von speziell nach allgemein:
+#
+#   nodes.<node>.pools.<pool>   dieser Pool auf diesem Node
+#   pools.<pool>                dieser Pool auf allen Nodes
+#   nodes.<node>.defaults       alles Übrige auf diesem Node
+#   defaults                    alles Übrige
+#
+# Welches Profil gegriffen hat, steht im Protokoll.
+#
+# nodes:
+#   vmh03:
+#     rules:
+#       # Hier hängt noch ein Speicher, der mit Discard nicht umgehen kann.
+#       discard: off
+#       # Neu im Cluster: erst einmal nur mitschreiben.
+#       iothread: report
+#     pools:
+#       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
+#       local-pool:
+#         mbps_wr: 80
+#     defaults:
+#       mbps_rd: 150
+#       mbps_wr: 100
 
 # ---------------------------------------------------------------------------
 # Vollständiges Beispiel: eine NVMe der 4. Generation, rund 10 VMs darauf

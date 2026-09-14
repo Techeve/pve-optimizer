@@ -1,16 +1,20 @@
-// Package watcher beobachtet die Proxmox-Aufgaben und ergänzt nach jeder
-// neu angelegten oder wiederhergestellten VM die fehlenden IO-Begrenzungen.
+// Package watcher beobachtet die Proxmox-Aufgaben und lässt nach jeder neu
+// angelegten oder wiederhergestellten VM die eingeschalteten Regeln über
+// sie laufen.
 package watcher
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"pve-optimizer/internal/config"
 	"pve-optimizer/internal/limits"
 	"pve-optimizer/internal/proxmox"
+	"pve-optimizer/internal/rules"
 )
 
 // Aufgabentypen, nach denen eine VM neue Platten haben kann. Container
@@ -26,6 +30,10 @@ type Watcher struct {
 	client proxmox.Client
 	log    *slog.Logger
 	state  *State
+
+	// rules je Node. Die Regeln eines Nodes ändern sich zur Laufzeit nicht,
+	// bei einem Durchlauf über hunderte VMs lohnt sich das Merken.
+	rules map[string]rules.Set
 }
 
 func New(cfg *config.Config, client proxmox.Client, log *slog.Logger) (*Watcher, error) {
@@ -33,7 +41,25 @@ func New(cfg *config.Config, client proxmox.Client, log *slog.Logger) (*Watcher,
 	if err != nil {
 		return nil, err
 	}
-	return &Watcher{cfg: cfg, client: client, log: log, state: state}, nil
+	return &Watcher{
+		cfg: cfg, client: client, log: log, state: state,
+		rules: map[string]rules.Set{},
+	}, nil
+}
+
+// rulesFor liefert die Regeln eines Nodes. Fehler sind hier nicht mehr zu
+// erwarten: Die Konfiguration ist beim Start für jeden genannten Node
+// durchgebaut worden.
+func (w *Watcher) rulesFor(node string) (rules.Set, error) {
+	if set, found := w.rules[node]; found {
+		return set, nil
+	}
+	set, err := w.cfg.RulesFor(node)
+	if err != nil {
+		return nil, err
+	}
+	w.rules[node] = set
+	return set, nil
 }
 
 // Run beobachtet bis zum Abbruch des Kontexts.
@@ -47,7 +73,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 	w.log.Info("beobachtung gestartet",
 		"modus", w.cfg.Mode, "umfang", scope,
-		"intervall", w.cfg.PollInterval, "dry_run", w.cfg.DryRun)
+		"intervall", w.cfg.PollInterval, "regeln", w.modes())
 
 	for {
 		if err := w.checkOnce(ctx); err != nil {
@@ -80,13 +106,13 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 
 	w.log.Info("durchlauf über alle vorhandenen vms",
 		"anzahl", len(vms), "im cluster", len(all),
-		"nur eigener node", w.cfg.RestrictedToOwnNode(), "dry_run", w.cfg.DryRun)
+		"nur eigener node", w.cfg.RestrictedToOwnNode(), "regeln", w.modes())
 
 	var touched, failed int
 	for _, vm := range vms {
 		log := w.log.With("node", vm.Node, "vmid", vm.VMID, "name", vm.Name)
 
-		changed, err := w.applyLimits(ctx, vm.Node, vm.VMID, log)
+		changed, err := w.applyRules(ctx, vm.Node, vm.VMID, log)
 		if err != nil {
 			// Eine einzelne VM darf den Durchlauf nicht abbrechen.
 			log.Error("vm nicht angepasst", "fehler", err)
@@ -171,55 +197,89 @@ func (w *Watcher) handleTask(ctx context.Context, task proxmox.Task) error {
 	}
 
 	log := w.log.With("node", task.Node, "vmid", vmid, "aufgabe", task.Type)
-	log.Info("vm fertiggestellt, platten werden geprüft")
+	log.Info("vm fertiggestellt, regeln werden geprüft")
 
-	changed, err := w.applyLimits(ctx, task.Node, vmid, log)
+	changed, err := w.applyRules(ctx, task.Node, vmid, log)
 	if err != nil {
 		return err
 	}
 	if changed == 0 {
-		log.Info("alle platten bereits begrenzt")
+		log.Info("nichts zu ergänzen")
 		return nil
 	}
-	log.Info("begrenzungen ergänzt", "platten", changed)
+	log.Info("konfiguration ergänzt", "felder", changed)
 	return nil
 }
 
-// applyLimits ergänzt die fehlenden Begrenzungen aller Platten einer VM und
-// liefert, wie viele Platten geändert wurden.
-func (w *Watcher) applyLimits(ctx context.Context, node string, vmid int, log *slog.Logger) (int, error) {
+// applyRules lässt die Regeln des Nodes über eine VM laufen und liefert,
+// wie viele Felder ihrer Konfiguration geändert wurden.
+func (w *Watcher) applyRules(ctx context.Context, node string, vmid int, log *slog.Logger) (int, error) {
+	set, err := w.rulesFor(node)
+	if err != nil {
+		return 0, err
+	}
 	vmConfig, err := w.client.VMConfig(ctx, node, vmid)
 	if err != nil {
 		return 0, err
 	}
 
-	fields := map[string]string{}
-	for key, value := range vmConfig {
-		disk, ok := limits.ParseDisk(key, value)
-		if !ok || disk.IsCDROM() {
-			continue
-		}
+	plan := rules.NewPlan(node, vmid, vmConfig, func(storage string) (limits.Profile, string) {
+		return w.cfg.ProfileFor(node, storage)
+	})
+	set.Apply(plan)
+	logNotes(log, plan.Notes())
 
-		profile, source := w.cfg.ProfileFor(node, disk.Storage())
-		missing := limits.Missing(disk, profile)
-		if len(missing) == 0 {
-			continue
-		}
-
-		log.Info("platte wird begrenzt",
-			"platte", key, "pool", disk.Storage(), "profil", source, "ergänzt", missing)
-		fields[key] = limits.Apply(disk, missing)
-	}
-
+	fields := plan.Fields()
 	if len(fields) == 0 {
 		return 0, nil
-	}
-	if w.cfg.DryRun {
-		log.Info("dry_run aktiv, es wird nichts geschrieben", "platten", len(fields))
-		return len(fields), nil
 	}
 	if err := w.client.UpdateVMConfig(ctx, node, vmid, fields); err != nil {
 		return 0, err
 	}
 	return len(fields), nil
+}
+
+// logNotes schreibt, was die Regeln vorhaben. Übersprungenes steht nur im
+// ausführlichen Protokoll — es ist der Normalfall und würde die Ausgabe
+// sonst zuschütten.
+func logNotes(log *slog.Logger, notes []rules.Note) {
+	for _, note := range notes {
+		entry := log.With("regel", note.Rule, "feld", note.Key)
+		switch note.Status {
+		case rules.StatusSkipped:
+			entry.Debug("regel greift nicht", "grund", note.Context)
+		case rules.StatusReported:
+			entry.Info("würde ergänzt", "wert", note.Change, "herkunft", note.Context)
+		default:
+			entry.Info("wird ergänzt", "wert", note.Change, "herkunft", note.Context)
+		}
+	}
+}
+
+// modes nennt die Regeln mit ihrem Modus — beim Start soll im Protokoll
+// stehen, was scharf ist und was nur meldet. Genannt wird der Stand für
+// den eigenen Node; abweichende Nodes stehen daneben, damit klar ist, dass
+// anderswo etwas anderes gilt.
+func (w *Watcher) modes() string {
+	set, err := w.rulesFor(w.cfg.Node)
+	if err != nil {
+		return "nicht ermittelbar: " + err.Error()
+	}
+
+	modes := set.Modes()
+	if others := w.nodesWithOwnRules(); others != "" {
+		modes += " (eigene regeln: " + others + ")"
+	}
+	return modes
+}
+
+func (w *Watcher) nodesWithOwnRules() string {
+	var nodes []string
+	for node, settings := range w.cfg.Nodes {
+		if node != w.cfg.Node && len(settings.Rules) > 0 {
+			nodes = append(nodes, node)
+		}
+	}
+	sort.Strings(nodes)
+	return strings.Join(nodes, ", ")
 }

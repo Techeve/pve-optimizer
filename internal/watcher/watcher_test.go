@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -399,5 +400,56 @@ func TestErfolgUeberholtFehlschlagNicht(t *testing.T) {
 	}
 	if w.state.LastEndTime >= 1000 {
 		t.Errorf("LastEndTime = %d — vm 402 hat die fehlgeschlagene vm 401 ueberholt", w.state.LastEndTime)
+	}
+}
+
+// Der Kern der Regeln je Node: Was clusterweit scharf ist, darf ein
+// einzelner Node abschalten — etwa weil dort noch ein Speicher hängt, der
+// mit Discard nicht umgehen kann.
+func TestRegelnJeNode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := `
+mode: local
+only_own_node: false
+state_file: ` + filepath.Join(t.TempDir(), "state.json") + `
+defaults:
+  mbps_rd: 200
+rules:
+  io_limits: off
+  discard: enforce
+nodes:
+  vmh03:
+    rules:
+      discard: off
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("testkonfiguration schreiben: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	client := &fakeClient{
+		vms: []proxmox.VM{
+			{VMID: 100, Node: "vmh02", Type: "qemu"},
+			{VMID: 101, Node: "vmh03", Type: "qemu"},
+		},
+		configs: map[int]map[string]string{
+			100: {"scsi0": "local-pool:vm-100-disk-0,size=32G"},
+			101: {"scsi0": "local-pool:vm-101-disk-0,size=32G"},
+		},
+	}
+
+	w := newTestWatcher(t, cfg, client)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep() = %v", err)
+	}
+
+	if got := client.updates[100]["scsi0"]; !strings.Contains(got, "discard=on") {
+		t.Errorf("vm 100 auf vmh02 = %q, erwartet discard=on", got)
+	}
+	if _, written := client.updates[101]; written {
+		t.Errorf("vm 101 auf vmh03 = %v, dort ist die regel abgeschaltet", client.updates[101])
 	}
 }

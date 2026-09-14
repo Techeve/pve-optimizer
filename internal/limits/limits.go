@@ -5,6 +5,7 @@ package limits
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -172,38 +173,23 @@ func anySet[V any](options map[string]V, keys []string) bool {
 	return false
 }
 
-// Apply baut den Config-Wert für die Platte samt der ergänzten Begrenzungen.
-// Das Ergebnis ist der vollständige String, den Proxmox für diesen Bus
-// erwartet.
-func Apply(disk Disk, additions map[string]int) string {
-	parts := []string{disk.Volume}
-
-	for name, value := range disk.Options {
+// Render baut den Config-Wert der Platte — den vollständigen String, den
+// Proxmox für diesen Bus erwartet. Mehrere Regeln ergänzen nacheinander
+// Optionen an derselben Platte; geschrieben wird am Ende einmal.
+func (d Disk) Render() string {
+	parts := []string{d.Volume}
+	for name, value := range d.Options {
 		if value == "" {
+			// Flags ohne Wert, etwa "backup".
 			parts = append(parts, name)
 			continue
 		}
 		parts = append(parts, name+"="+value)
 	}
 
-	for _, key := range Keys {
-		if value, ok := additions[key]; ok {
-			parts = append(parts, fmt.Sprintf("%s=%d", key, value))
-		}
-	}
-
 	// Die Optionen stammen aus einer Map und haben damit keine stabile
 	// Reihenfolge. Proxmox ist das egal, für lesbare Diffs und Tests aber
 	// nicht: Volume zuerst, danach alles Weitere sortiert.
-	sortTail(parts)
+	sort.Strings(parts[1:])
 	return strings.Join(parts, ",")
-}
-
-func sortTail(parts []string) {
-	tail := parts[1:]
-	for i := 1; i < len(tail); i++ {
-		for j := i; j > 0 && tail[j] < tail[j-1]; j-- {
-			tail[j], tail[j-1] = tail[j-1], tail[j]
-		}
-	}
 }

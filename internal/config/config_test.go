@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,7 +56,7 @@ pools:
 	}
 
 	profile, source := cfg.ProfileFor("vmh02", "local-pool")
-	if source != "local-pool" {
+	if source != "pools.local-pool" {
 		t.Fatalf("ProfileFor(local-pool) = %q, erwartet das pool-profil", source)
 	}
 	if profile["mbps_rd"] != 500 {
@@ -82,8 +83,14 @@ defaults:
 pools:
   local-pool:
     mbps_wr: 200
-  vmh03:local-pool:
-    mbps_wr: 50
+nodes:
+  vmh03:
+    pools:
+      local-pool:
+        mbps_wr: 50
+  vmh04:
+    defaults:
+      mbps_wr: 75
 `)
 
 	cfg, err := Load(path)
@@ -96,8 +103,9 @@ pools:
 		wantSource string
 		wantValue  int
 	}{
-		{"vmh03", "local-pool", "vmh03:local-pool", 50},
-		{"vmh02", "local-pool", "local-pool", 200},
+		{"vmh03", "local-pool", "nodes.vmh03.pools.local-pool", 50},
+		{"vmh02", "local-pool", "pools.local-pool", 200},
+		{"vmh04", "sonstwas", "nodes.vmh04.defaults", 75},
 		{"vmh02", "sonstwas", "defaults", 100},
 	}
 
@@ -110,6 +118,29 @@ pools:
 			t.Errorf("ProfileFor(%q, %q) mbps_wr = %d, erwartet %d",
 				tc.node, tc.pool, profile["mbps_wr"], tc.wantValue)
 		}
+	}
+}
+
+// Die alte Schreibweise "<node>:<pool>" gibt es nicht mehr. Sie soll beim
+// Start auffallen und nicht stillschweigend als Pool namens "vmh03:rpool"
+// durchgehen, den es nirgends gibt.
+func TestAlteNodeSchreibweiseWirdAbgewiesen(t *testing.T) {
+	path := writeConfig(t, `
+mode: local
+node: vmh03
+defaults:
+  mbps_wr: 100
+pools:
+  vmh03:local-pool:
+    mbps_wr: 50
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() = nil, erwartet ein Abbrechen wegen der alten Schreibweise")
+	}
+	if !strings.Contains(err.Error(), "nodes.<node>.pools") {
+		t.Errorf("Fehler nennt den neuen Ort nicht: %v", err)
 	}
 }
 
@@ -182,5 +213,22 @@ defaults:
 	}
 	if cfg.API.TokenSecret != "geheim" {
 		t.Errorf("TokenSecret = %q, erwartet aus der Umgebung", cfg.API.TokenSecret)
+	}
+}
+
+// Die mitgelieferte Vorlage muss sich laden lassen — sie ist das, was
+// jeder als Erstes kopiert.
+func TestBeispielkonfigurationLaedt(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("config.example.yaml: %v", err)
+	}
+
+	set, err := cfg.RulesFor("vmh02")
+	if err != nil {
+		t.Fatalf("RulesFor() = %v", err)
+	}
+	if len(set) == 0 {
+		t.Error("kein regelsatz aus der vorlage")
 	}
 }
