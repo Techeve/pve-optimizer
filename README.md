@@ -299,6 +299,42 @@ Ein `apt upgrade` tauscht später das Binary und startet den Dienst neu,
 sofern er eingerichtet ist. Die eigene `config.yaml` bleibt unangetastet;
 die Vorlage daneben wird auf den neuen Stand gebracht.
 
+### Umstieg von einer Handinstallation
+
+Wer den Dienst bisher von Hand eingerichtet hat, hat ihn unter
+`/usr/local/bin/pve-optimizer` liegen und seine Unit unter
+`/etc/systemd/system/`. **Ein `apt install` allein reicht dort nicht** —
+im Gegenteil, es sieht danach nur so aus, als wäre der Dienst aktuell:
+
+Das Paket legt das Binary nach `/usr/bin` und die Unit nach
+`/lib/systemd/system`. Systemd bevorzugt aber, was unter `/etc` steht. Die
+alte Unit bleibt also maßgeblich und zeigt weiter auf `/usr/local/bin` —
+das Paket-Binary wird nie gestartet. Das Installationsskript startet den
+Dienst neu, weil er eingeschaltet ist, und bringt damit **die alte Version
+wieder hoch**. Ein `pve-optimizer -version` am eingeschalteten Dienst
+zeigt weiterhin den alten Stand.
+
+Der Umstieg braucht deshalb einmalig je Node:
+
+```bash
+systemctl stop pve-optimizer
+rm /etc/systemd/system/pve-optimizer.service
+rm /usr/local/bin/pve-optimizer
+apt install pve-optimizer
+systemctl daemon-reload
+systemctl enable --now pve-optimizer
+systemctl status pve-optimizer      # Version im Protokoll gegenprüfen
+```
+
+Die eigene `/etc/pve-optimizer/config.yaml` bleibt dabei liegen und gilt
+weiter. Zwei Dinge sind daran zu prüfen:
+
+- Steht dort noch ein Pool in der alten Schreibweise `<node>:<pool>`,
+  bricht der Dienst beim Start mit einem Hinweis ab — der Eintrag gehört
+  unter [`nodes:`](#abweichungen-je-node).
+- Ohne einen Abschnitt `rules:` bleibt es beim bisherigen Verhalten: Die
+  IO-Begrenzung ist scharf, alle neuen Regeln sind aus.
+
 ### Von Hand
 
 Ohne Repository — die Binaries hängen an jedem
