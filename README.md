@@ -255,9 +255,49 @@ die Konfigurationsdatei, sondern in die Umgebungsvariable
 
 ## Installation
 
+### Aus dem Techeve-Repository
+
+Der empfohlene Weg — auf jedem Node, der den Dienst bekommen soll. Proxmox
+ist Debian, das Paket kommt also aus `apt` wie alles andere auch:
+
 ```bash
-install -m 0755 pve-optimizer-linux-amd64 /usr/local/bin/pve-optimizer
-install -d /etc/pve-optimizer
+apt update && apt install pve-optimizer
+```
+
+Ist die Paketquelle auf dem Node noch nicht eingebunden, einmalig — der
+Repository-Server bringt dafür ein Einrichtungsskript mit, das den
+Signaturschlüssel hinterlegt und die Quelle einträgt:
+
+```bash
+curl -fsSL https://repo.techeve.de/setup.sh | sh
+```
+
+**Der Dienst startet nach der Installation bewusst nicht von selbst.** Er
+schreibt in die Konfiguration laufender VMs, und womit, hängt an der
+Hardware des Clusters — was ohne Zutun losliefe, wäre geraten. Das Paket
+bringt deshalb nur die Vorlage mit:
+
+```bash
+cp /etc/pve-optimizer/config.example.yaml /etc/pve-optimizer/config.yaml
+$EDITOR /etc/pve-optimizer/config.yaml       # dry_run: true stehen lassen
+systemctl enable --now pve-optimizer
+journalctl -u pve-optimizer -f               # was er tun würde
+```
+
+Sieht das Protokoll gut aus, `dry_run: false` setzen und neu starten.
+
+Ein `apt upgrade` tauscht später das Binary und startet den Dienst neu,
+sofern er eingerichtet ist. Die eigene `config.yaml` bleibt unangetastet;
+die Vorlage daneben wird auf den neuen Stand gebracht.
+
+### Von Hand
+
+Ohne Repository — die Binaries hängen an jedem
+[Release](https://gitlab.techeve.de/techeve/pve-optimizer/-/releases):
+
+```bash
+install -m 0755 pve-optimizer-linux-amd64 /usr/bin/pve-optimizer
+install -d -m 0750 /etc/pve-optimizer
 install -m 0644 config.example.yaml /etc/pve-optimizer/config.yaml
 install -m 0644 deploy/pve-optimizer.service /etc/systemd/system/
 systemctl daemon-reload
@@ -277,6 +317,7 @@ journalctl -u pve-optimizer -f
 make            # Übersicht aller Ziele
 make check      # fmt, vet, lint, test, govulncheck — das, was auch die CI prüft
 make build      # Binary für den eigenen Rechner
+make deb        # Debian-Pakete für amd64 und arm64
 ```
 
 Vor jedem Push `make check` — die Pipeline prüft dasselbe.
