@@ -34,7 +34,17 @@ test: ## Tests
 vulncheck: ## Bekannte Schwachstellen in den Abhängigkeiten
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+deb: build-linux ## Debian-Pakete (amd64 + arm64) bauen
+	@for A in amd64 arm64; do \
+		cp "bin/$(BINARY)-linux-$$A" bin/$(BINARY)-pkg; \
+		PVE_OPTIMIZER_ARCH="$$A" PVE_OPTIMIZER_VERSION="$(VERSION)" \
+			go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
+			--config packaging/nfpm.yaml --packager deb --target bin/; \
+	done
+	@rm -f bin/$(BINARY)-pkg
+	@ls -lh bin/*.deb
+
 clean: ## Build-Ergebnisse entfernen
 	rm -rf bin/
 
-.PHONY: help build build-linux check fmt vet lint test vulncheck clean
+.PHONY: help build build-linux deb check fmt vet lint test vulncheck clean

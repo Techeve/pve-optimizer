@@ -9,10 +9,13 @@
 #            automatisch die nächste Version, generiert den Changelog,
 #            erzeugt Tag + Release mit Binaries und schreibt VERSION +
 #            CHANGELOG.md zurück nach develop.
+#   deploy   auf main bei einem Release: rollt die .deb-Pakete auf den
+#            Repository-Server aus, danach ist der Dienst per
+#            `apt install pve-optimizer` zu haben.
 #
 # Merge Requests nach main sind nur mergebar, wenn die Pipeline grün ist.
 
-stages: [check, test, build, release]
+stages: [check, test, build, release, deploy]
 
 default:
   tags: [docker]
@@ -146,12 +149,42 @@ binaries:
     paths: [bin/]
     expire_in: 1 month
 
+# Baut installierbare Debian-Pakete (.deb) mit systemd-Dienst für amd64 und
+# arm64 aus den zuvor cross-kompilierten Binaries (via nfpm). Proxmox-Nodes
+# sind Debian — damit ist apt der natürliche Weg auf den Node.
+packages:deb:
+  stage: build
+  image: $GO_IMAGE
+  cache: *go-cache
+  needs:
+    - binaries
+    - job: version
+      optional: true
+  script:
+    - APP_VERSION=${NEXT_VERSION:-$(cat VERSION)}
+    # Debian-Versionsformat: SemVer-Prerelease "-beta.1" wird zu "~beta.1",
+    # damit die Beta laut apt VOR dem späteren Finale (1.0.0) sortiert.
+    - DEB_VERSION=$(echo "$APP_VERSION" | tr '-' '~')
+    - echo "Paketiere ${APP_VERSION} — Debian-Version ${DEB_VERSION}"
+    - |
+      for A in amd64 arm64; do
+        cp "bin/pve-optimizer-linux-${A}" bin/pve-optimizer-pkg
+        PVE_OPTIMIZER_ARCH="$A" PVE_OPTIMIZER_VERSION="$DEB_VERSION" \
+          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
+          --config packaging/nfpm.yaml --packager deb --target bin/
+      done
+    - rm -f bin/pve-optimizer-pkg
+    - ls -lh bin/*.deb
+  artifacts:
+    paths: [bin/*.deb]
+    expire_in: 1 month
+
 ## ---- release -------------------------------------------------------------------
 
 release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs: [version, binaries]
+  needs: [version, binaries, packages:deb]
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
   script:
@@ -202,3 +235,32 @@ release:
         commit -m "chore(release): v${NEXT_VERSION} — VERSION & Changelog aktualisiert [skip ci]"
       git push "https://release-bot:${RELEASE_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" develop
       echo "VERSION und CHANGELOG.md auf develop aktualisiert."
+
+## ---- deploy --------------------------------------------------------------------
+
+# Rollt die gebauten .deb-Pakete beim Release auf den Techeve-Repository-Server
+# (aptly) aus — danach ist der Dienst per `apt install pve-optimizer` auf jedem
+# Node installier- und aktualisierbar. Läuft nur auf main und nur, wenn
+# tatsächlich ein Release ansteht (RELEASE_NEEDED aus dem version-Job).
+# Sequenziert nach dem release-Job: erst das GitLab-Release, dann das Repo.
+#
+# Voraussetzung: die geerbten techeve-Gruppenvariablen REPO_URL, REPO_USER,
+# REPO_PASS. Sie sind PROTECTED — main muss deshalb ein geschützter Branch
+# sein, sonst sind sie leer und publish-deb.sh bricht mit klarer Meldung ab.
+# Optional: REPO_NAME (Default techeve), DISTRO (Default stable),
+# GPG_KEY (Default repo@techeve.de).
+deploy:apt:
+  stage: deploy
+  image: debian:bookworm-slim
+  needs: [version, packages:deb, release]
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
+  script:
+    - |
+      if [ "$RELEASE_NEEDED" != "true" ]; then
+        echo "Kein Release ansteht (RELEASE_NEEDED != true) — .deb wird nicht ausgerollt."
+        exit 0
+      fi
+    - bash packaging/publish-deb.sh
