@@ -243,33 +243,3 @@ func TestRenderErhaeltFlags(t *testing.T) {
 		t.Errorf("Render() = %q", got)
 	}
 }
-
-func TestApply(t *testing.T) {
-	disk, ok := ParseDisk("scsi0", "local-pool:vm-100-disk-0,size=32G,iothread=1")
-	if !ok {
-		t.Fatal("ParseDisk sollte den Eintrag annehmen")
-	}
-
-	got := Apply(disk, map[string]int{"mbps_rd": 200, "iops_wr": 3000})
-
-	if !strings.HasPrefix(got, "local-pool:vm-100-disk-0,") {
-		t.Errorf("Volume muss zuerst stehen, bekommen: %q", got)
-	}
-	for _, want := range []string{"size=32G", "iothread=1", "mbps_rd=200", "iops_wr=3000"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("%q fehlt in %q", want, got)
-		}
-	}
-}
-
-func TestApplyIstStabil(t *testing.T) {
-	disk, _ := ParseDisk("scsi0", "local-pool:vm-100-disk-0,size=32G,iothread=1,ssd=1,discard=on")
-	additions := map[string]int{"mbps_rd": 200, "mbps_wr": 150}
-
-	first := Apply(disk, additions)
-	for i := 0; i < 20; i++ {
-		if got := Apply(disk, additions); got != first {
-			t.Fatalf("Apply ist nicht stabil: %q vs. %q", got, first)
-		}
-	}
-}

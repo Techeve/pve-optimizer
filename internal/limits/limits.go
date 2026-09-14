@@ -193,39 +193,3 @@ func (d Disk) Render() string {
 	sort.Strings(parts[1:])
 	return strings.Join(parts, ",")
 }
-
-// Apply baut den Config-Wert für die Platte samt der ergänzten Begrenzungen.
-// Das Ergebnis ist der vollständige String, den Proxmox für diesen Bus
-// erwartet.
-func Apply(disk Disk, additions map[string]int) string {
-	parts := []string{disk.Volume}
-
-	for name, value := range disk.Options {
-		if value == "" {
-			parts = append(parts, name)
-			continue
-		}
-		parts = append(parts, name+"="+value)
-	}
-
-	for _, key := range Keys {
-		if value, ok := additions[key]; ok {
-			parts = append(parts, fmt.Sprintf("%s=%d", key, value))
-		}
-	}
-
-	// Die Optionen stammen aus einer Map und haben damit keine stabile
-	// Reihenfolge. Proxmox ist das egal, für lesbare Diffs und Tests aber
-	// nicht: Volume zuerst, danach alles Weitere sortiert.
-	sortTail(parts)
-	return strings.Join(parts, ",")
-}
-
-func sortTail(parts []string) {
-	tail := parts[1:]
-	for i := 1; i < len(tail); i++ {
-		for j := i; j > 0 && tail[j] < tail[j-1]; j-- {
-			tail[j], tail[j-1] = tail[j-1], tail[j]
-		}
-	}
-}
