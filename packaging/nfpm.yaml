@@ -1,0 +1,59 @@
+# nfpm-Konfiguration für das pve-optimizer-Debian-Paket.
+#
+# arch und version kommen aus der Umgebung (PVE_OPTIMIZER_ARCH,
+# PVE_OPTIMIZER_VERSION), damit dieselbe Datei amd64- und arm64-Pakete
+# erzeugt. Siehe Makefile-Target `deb` und den CI-Job `packages:deb`.
+name: pve-optimizer
+arch: "${PVE_OPTIMIZER_ARCH}"
+platform: linux
+version: "${PVE_OPTIMIZER_VERSION}"
+section: admin
+priority: optional
+maintainer: "Techeve <claude@techeve.de>"
+vendor: "Techeve"
+homepage: "https://gitlab.techeve.de/techeve/pve-optimizer"
+license: "proprietary"
+description: |
+  pve-optimizer - fills in what Proxmox VE leaves open on new VMs.
+  Watches the cluster task list and, once a VM has been created, cloned or
+  restored, applies a set of rules to it: IO limits per storage pool,
+  discard, the SSD flag, an IO thread per disk, the guest agent and
+  staggered start-up delays. Every rule has a mode of its own - off, report
+  (log only) or enforce - and can be overridden per node. Existing values
+  are never overwritten. Single CGO-free Go binary running as a systemd
+  service. Configuration in /etc/pve-optimizer.
+
+contents:
+  # Das arch-passende Binary wird vor dem Packen auf diesen festen Namen
+  # gestaged (nfpm expandiert ${PVE_OPTIMIZER_ARCH} in arch/version, aber
+  # nicht im src-Glob). Siehe Makefile-Target `deb` und CI-Job packages:deb.
+  - src: ./bin/pve-optimizer-pkg
+    dst: /usr/bin/pve-optimizer
+    file_info:
+      mode: 0755
+  - src: ./deploy/pve-optimizer.service
+    dst: /lib/systemd/system/pve-optimizer.service
+    file_info:
+      mode: 0644
+
+  # Die Vorlage, nicht die Konfiguration: Der Dienst startet bewusst nicht
+  # von selbst, sondern erst, wenn jemand daraus eine config.yaml gemacht
+  # und die Werte auf die eigene Hardware gebracht hat. Ein Update bringt
+  # deshalb immer die aktuelle Vorlage mit, ohne etwas zu überschreiben,
+  # woran jemand gearbeitet hat.
+  - src: ./config.example.yaml
+    dst: /etc/pve-optimizer/config.example.yaml
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/pve-optimizer/README.md
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh
+  postremove: ./packaging/scripts/postremove.sh
+
+deb:
+  compression: xz

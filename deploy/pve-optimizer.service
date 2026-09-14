@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/pve-optimizer -config /etc/pve-optimizer/config.yaml
+ExecStart=/usr/bin/pve-optimizer -config /etc/pve-optimizer/config.yaml
 Restart=on-failure
 RestartSec=10s
 
