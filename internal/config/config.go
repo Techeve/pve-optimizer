@@ -5,11 +5,13 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"pve-optimizer/internal/limits"
+	"pve-optimizer/internal/rules"
 )
 
 // Mode bestimmt, wie der Dienst mit Proxmox spricht.
@@ -44,6 +46,20 @@ type Config struct {
 	Node string `yaml:"node"`
 
 	API      API                       `yaml:"api"`
+	Defaults limits.Profile            `yaml:"defaults"`
+	Pools    map[string]limits.Profile `yaml:"pools"`
+
+	// Rules sind die Regeln, die clusterweit gelten. Ausgewertet werden
+	// sie im Paket rules — jede Regel kennt ihre eigenen Optionen.
+	Rules map[string]yaml.Node `yaml:"rules"`
+	// Nodes weicht davon ab, je Node. Genannt wird nur, was anders ist.
+	Nodes map[string]NodeSettings `yaml:"nodes"`
+}
+
+// Node ist die Abweichung eines einzelnen Nodes. Alles, was hier fehlt,
+// gilt so, wie es clusterweit eingestellt ist.
+type NodeSettings struct {
+	Rules    map[string]yaml.Node      `yaml:"rules"`
 	Defaults limits.Profile            `yaml:"defaults"`
 	Pools    map[string]limits.Profile `yaml:"pools"`
 }
@@ -127,12 +143,54 @@ func (c *Config) validate() error {
 		return err
 	}
 	for name, profile := range c.Pools {
+		if strings.Contains(name, ":") {
+			return fmt.Errorf("pools.%s: profile je node stehen unter nodes.<node>.pools.<pool>", name)
+		}
 		if err := validateProfile("pools."+name, profile); err != nil {
 			return err
 		}
 	}
+	if err := c.validateNodes(); err != nil {
+		return err
+	}
+	if err := c.validateRules(); err != nil {
+		return err
+	}
 	if c.Mode == ModeAPI {
 		return c.validateAPI()
+	}
+	return nil
+}
+
+func (c *Config) validateNodes() error {
+	for node, settings := range c.Nodes {
+		context := "nodes." + node
+		if len(settings.Defaults) > 0 {
+			if err := validateProfile(context+".defaults", settings.Defaults); err != nil {
+				return err
+			}
+		}
+		for name, profile := range settings.Pools {
+			if err := validateProfile(context+".pools."+name, profile); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateRules baut die Regeln einmal für jeden genannten Node durch.
+// Ein Tippfehler in einem Regelnamen oder einer Option soll den Dienst
+// beim Start abbrechen lassen und nicht erst dann auffallen, wenn die
+// gemeinte Regel monatelang stillschweigend aus war.
+func (c *Config) validateRules() error {
+	if _, err := c.RulesFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.RulesFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
 	}
 	return nil
 }
@@ -172,23 +230,46 @@ func validateProfile(context string, profile limits.Profile) error {
 }
 
 // ProfileFor liefert das Profil für einen Speicherpool auf einem Node.
-// Gesucht wird in dieser Reihenfolge:
+// Gesucht wird von speziell nach allgemein:
 //
-//	"<node>:<pool>"  genau dieser Pool auf genau diesem Node
-//	"<pool>"         der Pool auf allen Nodes
-//	defaults         alles Übrige
+//	nodes.<node>.pools.<pool>   dieser Pool auf diesem Node
+//	pools.<pool>                dieser Pool auf allen Nodes
+//	nodes.<node>.defaults       alles Übrige auf diesem Node
+//	defaults                    alles Übrige
 //
 // Die erste Stufe ist nötig, weil gleichnamige Pools auf verschiedenen
 // Nodes auf völlig unterschiedlicher Hardware liegen können. Der zweite
 // Rückgabewert nennt die Fundstelle — nützlich fürs Protokoll.
 func (c *Config) ProfileFor(node, storage string) (limits.Profile, string) {
-	if profile, found := c.Pools[node+":"+storage]; found {
-		return profile, node + ":" + storage
+	settings := c.Nodes[node]
+
+	if profile, found := settings.Pools[storage]; found {
+		return profile, "nodes." + node + ".pools." + storage
 	}
 	if profile, found := c.Pools[storage]; found {
-		return profile, storage
+		return profile, "pools." + storage
+	}
+	if len(settings.Defaults) > 0 {
+		return settings.Defaults, "nodes." + node + ".defaults"
 	}
 	return c.Defaults, "defaults"
+}
+
+// RulesFor baut die Regeln für einen Node: die clusterweiten Einstellungen,
+// darüber die Abweichung dieses Nodes.
+//
+// Ein Probelauf wirkt hier und nicht in den Regeln selbst: dry_run senkt
+// jede scharfe Regel auf "report" ab, protokolliert wird also alles,
+// geschrieben nichts.
+func (c *Config) RulesFor(node string) (rules.Set, error) {
+	set, err := rules.Build(c.Rules, c.Nodes[node].Rules)
+	if err != nil {
+		return nil, err
+	}
+	if c.DryRun {
+		return set.ReportOnly(), nil
+	}
+	return set, nil
 }
 
 // RestrictedToOwnNode meldet, ob sich der Dienst auf den eigenen Node
