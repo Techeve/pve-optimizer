@@ -1,12 +1,21 @@
-# pve-optimizer
+<div align="center">
 
-Ein kleiner Dienst für Proxmox VE. Er beobachtet die Aufgabenliste des
-Clusters und trägt an neu angelegten, geklonten oder wiederhergestellten
-VMs nach, was Proxmox offenlässt: IO-Begrenzungen, Discard, das
-SSD-Kennzeichen, den Gast-Agenten, gestaffelte Startzeiten.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logo/pve-optimizer-wordmark-dark.svg">
+  <img src="logo/pve-optimizer-wordmark-light.svg" alt="pve-optimizer" width="420">
+</picture>
 
-**Bereits gesetzte Werte bleiben unangetastet.** Der Dienst ergänzt nur,
-er korrigiert nicht.
+**Proxmox VE lässt bei jeder neuen VM Einstellungen offen. Dieser Dienst trägt sie nach.**
+
+IO-Begrenzungen je Speicherpool · Discard · SSD-Kennzeichen · IO-Thread ·
+Gast-Agent · gestaffelter Start — jede Prüfung eine eigene Regel, je Node
+einstellbar, und nichts davon überschreibt, was jemand bewusst gesetzt hat.
+
+[Installation](#installation) · [Regeln](#regeln) · [Konfiguration](#konfiguration) · [Lizenz](#lizenz) · [English](#english)
+
+</div>
+
+---
 
 ## Warum
 
@@ -368,6 +377,26 @@ Die Logik dahinter in Kurzform:
   der Dienst den aktuellen Zeitpunkt und arbeitet die Historie nicht nach —
   für bestehende VMs ist `-sweep` da.
 
+## Lizenz
+
+[AGPL-3.0](LICENSE) — freie Nutzung, auch kommerziell. Wer den Dienst
+verändert und betreibt, gibt die Änderungen unter derselben Lizenz weiter.
+Keine Gewährleistung, keine Haftung.
+
+## Über uns
+
+pve-optimizer entsteht bei **[Techeve](https://techeve.de/?mtm_campaign=linking&mtm_kwd=README)** —
+wir bauen Go-Backends, Weboberflächen und Werkzeuge für den eigenen Betrieb,
+für Kunden und als eigene Produkte. Das meiste davon läuft dort, wo auch
+dieser Dienst zu Hause ist: auf selbst betriebenen Servern.
+
+Die Dokumentation aller Projekte steht unter
+[doc.techeve.de](https://doc.techeve.de/?mtm_campaign=linking&mtm_kwd=README),
+der Quelltext auf
+[gitlab.techeve.de](https://gitlab.techeve.de/?mtm_campaign=linking&mtm_kwd=README).
+
+Fragen, Fehler, Wünsche: gerne als Issue.
+
 ---
 
 ## English
@@ -387,3 +416,6 @@ cluster API (`mode: api`).
 VMs only — Proxmox has no per-mountpoint throttling for LXC containers.
 
 See [`config.example.yaml`](config.example.yaml) for all options.
+
+Licensed under the [AGPL-3.0](LICENSE). Built by
+[Techeve](https://techeve.de/?mtm_campaign=linking&mtm_kwd=README).
