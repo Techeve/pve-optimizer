@@ -8,8 +8,9 @@
 **Proxmox VE lässt bei jeder neuen VM Einstellungen offen. Dieser Dienst trägt sie nach.**
 
 IO-Begrenzungen je Speicherpool · Discard · SSD-Kennzeichen · IO-Thread ·
-Gast-Agent · gestaffelter Start — jede Prüfung eine eigene Regel, je Node
-einstellbar, und nichts davon überschreibt, was jemand bewusst gesetzt hat.
+Gast-Agent · gestaffelter Start für VMs **und Container** — jede Prüfung
+eine eigene Regel, je Node einstellbar, und nichts davon überschreibt, was
+jemand bewusst gesetzt hat.
 
 [Installation](#installation) · [Regeln](#regeln) · [Konfiguration](#konfiguration) · [Lizenz](#lizenz) · [English](#english)
 
@@ -37,8 +38,8 @@ einstellen lässt.
 
 1. Fragt regelmäßig `/cluster/tasks` ab.
 2. Filtert auf abgeschlossene Aufgaben vom Typ `qmcreate`, `qmrestore`
-   und `qmclone`.
-3. Liest die Konfiguration der betroffenen VM.
+   und `qmclone` — und bei Containern `vzcreate`, `vzrestore`, `vzclone`.
+3. Liest die Konfiguration des betroffenen Gastes.
 4. Lässt die eingeschalteten Regeln darüber laufen.
 5. Schreibt einmal, was dabei zusammengekommen ist.
 
@@ -150,17 +151,21 @@ Ohne den Abschnitt ist `io_limits` scharf und alles Weitere aus — ein
 Update ändert also von sich aus nichts am Verhalten. `dry_run: true` senkt
 jede scharfe Regel auf `report` ab.
 
-| Regel | Was sie ergänzt | Optionen |
-|---|---|---|
-| `io_limits` | die IO-Begrenzungen aus dem Profil des Pools | — |
-| `discard` | `discard=on` | `pools` |
-| `ssd` | `ssd=1` | `pools` |
-| `iothread` | `iothread=1` | — |
-| `guest_agent` | `agent=1` | `fstrim_cloned_disks` |
-| `startup` | `up=<sekunden>` im Feld `startup` | `up` |
+| Regel | Was sie ergänzt | Gilt für | Optionen |
+|---|---|---|---|
+| `io_limits` | die IO-Begrenzungen aus dem Profil des Pools | VMs | — |
+| `discard` | `discard=on` | VMs | `pools` |
+| `ssd` | `ssd=1` | VMs | `pools` |
+| `iothread` | `iothread=1` | VMs | — |
+| `guest_agent` | `agent=1` | VMs | `fstrim_cloned_disks` |
+| `startup` | `up=<sekunden>` im Feld `startup` | VMs **und Container** | `up`, `vm`, `lxc` |
 
 Ein `pools`-Eintrag schränkt die Regel auf die genannten Speicherpools
 ein; ohne ihn gilt sie für alle.
+
+Bis auf die Staffelung betrifft alles nur VMs: Proxmox kennt für Container
+weder eine Drosselung je Mountpoint noch einen Gast-Agenten. Eine Regel,
+die für die Gastart nicht gilt, läuft dort erst gar nicht.
 
 Zu den einzelnen Regeln:
 
@@ -185,10 +190,29 @@ nach einem Stromausfall. Im Gast muss der Agent zusätzlich installiert
 sein; ist er nicht da, ändert das Kennzeichen nichts.
 
 **`startup`** staffelt den Start nach einem Neustart des Nodes: `up` ist der
-Abstand, den Proxmox nach dieser VM einhält, bevor die nächste startet.
-Ohne das fahren alle automatisch startenden VMs gleichzeitig hoch und
-erzeugen genau die Lastspitze, gegen die die IO-Begrenzung sonst arbeitet.
-Angefasst werden nur VMs mit `onboot: 1` — ob eine VM mitstarten soll,
+Abstand, den Proxmox nach diesem Gast einhält, bevor der nächste startet.
+Ohne das fährt alles, was automatisch mitstartet, gleichzeitig hoch und
+erzeugt genau die Lastspitze, gegen die die IO-Begrenzung sonst arbeitet.
+
+Als einzige Regel betrifft sie auch **Container** — ein Node fährt beide
+Gastarten gemeinsam hoch. Weil ein Container in Sekunden oben ist, eine VM
+aber erst ihr BIOS durchläuft, lässt sich der Abstand getrennt setzen:
+
+```yaml
+rules:
+  startup:
+    mode: enforce
+    up: 30s          # gilt für beide, solange darunter nichts steht
+    vm:
+      up: 45s        # nur VMs
+    lxc:
+      up: 10s        # nur Container
+```
+
+Ein Abstand von `0` heißt hier wie überall: nicht setzen. `lxc: {up: 0}`
+lässt Container also ganz in Ruhe.
+
+Angefasst wird nur, was `onboot: 1` trägt — ob ein Gast mitstarten soll,
 entscheidet der Betreiber, und eine fehlende Angabe ist hier keine
 vergessene Einstellung.
 
@@ -367,18 +391,19 @@ make deb        # Debian-Pakete für amd64 und arm64
 
 Vor jedem Push `make check` — die Pipeline prüft dasselbe.
 
-## Bestehende VMs nachziehen
+## Bestehende Gäste nachziehen
 
 Die laufende Beobachtung greift nur bei neuen Aufgaben — an bereits
-vorhandenen VMs bliebe also alles, wie es ist. Für den Rollout gibt es
-deshalb einen einmaligen Durchlauf über alle VMs des Clusters:
+vorhandenen Gästen bliebe also alles, wie es ist. Für den Rollout gibt es
+deshalb einen einmaligen Durchlauf über alle VMs und Container des
+Clusters:
 
 ```bash
 pve-optimizer -config /etc/pve-optimizer/config.yaml -sweep
 ```
 
 Erst mit `dry_run: true` laufen lassen und das Protokoll prüfen, dann scharf.
-Der Durchlauf beendet sich nach getaner Arbeit; eine VM, die sich nicht
+Der Durchlauf beendet sich nach getaner Arbeit; ein Gast, der sich nicht
 anpassen lässt, bricht ihn nicht ab, sondern wird am Ende gemeldet.
 
 ## Sinnvolle Werte finden
@@ -404,14 +429,16 @@ Die Logik dahinter in Kurzform:
 
 ## Grenzen
 
-- **Nur VMs, keine Container.** Proxmox kennt für LXC keine Drosselung je
-  Mountpoint; dort ginge das nur über cgroup-Limits für den ganzen
-  Container.
+- **An Containern nur die Staffelung.** Proxmox kennt für LXC keine
+  Drosselung je Mountpoint und keinen Gast-Agenten; Drosselung ginge dort
+  nur über cgroup-Limits für den ganzen Container. Der gestaffelte Start
+  dagegen ist bei beiden Gastarten dasselbe Feld und wird deshalb auch bei
+  Containern ergänzt.
 - **Kein Neustart von Gästen.** Was erst beim nächsten Start der VM wirkt,
   wirkt erst dann.
 - **Im laufenden Betrieb nur neue Aufgaben.** Beim ersten Start merkt sich
   der Dienst den aktuellen Zeitpunkt und arbeitet die Historie nicht nach —
-  für bestehende VMs ist `-sweep` da.
+  für bestehende Gäste ist `-sweep` da.
 
 ## Lizenz
 
@@ -438,9 +465,9 @@ Fragen, Fehler, Wünsche: gerne als Issue.
 ## English
 
 A small service for Proxmox VE. It watches the cluster task list and, once
-a VM has been **created, cloned or restored from backup**, fills in what
-Proxmox leaves open: IO limits, discard, the SSD flag, the guest agent,
-staggered start-up delays.
+a guest — VM or container — has been **created, cloned or restored from
+backup**, fills in what Proxmox leaves open: IO limits, discard, the SSD
+flag, the guest agent, staggered start-up delays.
 
 Each check is a rule with a mode of its own — `off`, `report` (log only) or
 `enforce` (write). Rules, per-pool throttling profiles and their defaults
@@ -449,7 +476,10 @@ values are never overwritten**; the service only fills gaps. It runs either
 locally on each node via `pvesh` (`mode: local`) or once against the
 cluster API (`mode: api`).
 
-VMs only — Proxmox has no per-mountpoint throttling for LXC containers.
+Disk and agent settings apply to VMs only — Proxmox has no per-mountpoint
+throttling and no guest agent for LXC containers. The start-up stagger is
+the same field on both, so containers get it too, with a delay of their
+own.
 
 See [`config.example.yaml`](config.example.yaml) for all options.
 

@@ -140,17 +140,32 @@ rules:
     fstrim_cloned_disks: true
 
   # Den Start nach einem Neustart des Nodes staffeln: "up" ist der
-  # Abstand, den Proxmox nach dieser VM einhält, bevor die nächste
-  # startet. Ohne das fahren alle automatisch startenden VMs gleichzeitig
-  # hoch und erzeugen genau die Lastspitze, gegen die die IO-Begrenzung
-  # sonst arbeitet.
+  # Abstand, den Proxmox nach diesem Gast einhält, bevor der nächste
+  # startet. Ohne das fahren alle automatisch startenden Gäste
+  # gleichzeitig hoch und erzeugen genau die Lastspitze, gegen die die
+  # IO-Begrenzung sonst arbeitet.
   #
-  # Angefasst werden nur VMs, die ohnehin automatisch mitstarten. Ob eine
-  # VM mitstarten soll, entscheidet der Betreiber — eine fehlende Angabe
-  # ist hier keine vergessene Einstellung.
+  # Als einzige Regel betrifft sie auch Container — ein Node fährt beide
+  # Gastarten gemeinsam hoch. Weil ein Container in Sekunden oben ist,
+  # eine VM aber erst ihr BIOS durchläuft, lässt sich der Abstand je
+  # Gastart getrennt setzen:
+  #
+  #   up          gilt für beide, solange darunter nichts Genaueres steht
+  #   vm.up       nur für VMs
+  #   lxc.up      nur für Container
+  #
+  # Ein Abstand von 0 heißt hier wie überall: nicht setzen. So bleibt
+  # eine Gastart ganz unangetastet.
+  #
+  # Angefasst wird nur, was ohnehin automatisch mitstartet (onboot: 1).
+  # Ob ein Gast mitstarten soll, entscheidet der Betreiber — eine
+  # fehlende Angabe ist hier keine vergessene Einstellung.
   startup:
     mode: report
-    up: 30s
+    vm:
+      up: 45s
+    lxc:
+      up: 10s
 
 # ---------------------------------------------------------------------------
 # Abweichungen je Node
@@ -178,6 +193,10 @@ rules:
 #       discard: off
 #       # Neu im Cluster: erst einmal nur mitschreiben.
 #       iothread: report
+#       # Dieser Node trägt fast nur Container und startet schneller.
+#       startup:
+#         lxc:
+#           up: 5s
 #     pools:
 #       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
 #       local-pool:
