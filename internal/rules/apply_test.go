@@ -5,19 +5,25 @@ import (
 	"testing"
 
 	"pve-optimizer/internal/limits"
+	"pve-optimizer/internal/proxmox"
 )
 
 // newPlan baut den Entwurf für eine VM. Das Profil ist bewusst schmal —
 // die Rechnerei dahinter prüft das Paket limits.
-func newPlan(config map[string]string) *Plan {
-	return NewPlan("vmh02", 100, config, func(string) (limits.Profile, string) {
+func newPlan(kind proxmox.Kind, config map[string]string) *Plan {
+	return NewPlan("vmh02", kind, 100, config, func(string) (limits.Profile, string) {
 		return limits.Profile{"mbps_rd": 200}, "defaults"
 	})
 }
 
 func apply(t *testing.T, general string, config map[string]string) *Plan {
 	t.Helper()
-	plan := newPlan(config)
+	return applyTo(t, proxmox.KindQemu, general, config)
+}
+
+func applyTo(t *testing.T, kind proxmox.Kind, general string, config map[string]string) *Plan {
+	t.Helper()
+	plan := newPlan(kind, config)
 	build(t, general, "").Apply(plan)
 	return plan
 }
@@ -275,5 +281,64 @@ func TestSonderplattenBleibenAussenVor(t *testing.T) {
 
 	if len(plan.Fields()) != 0 {
 		t.Errorf("Fields() = %v, erwartet keine Änderung", plan.Fields())
+	}
+}
+
+// Container bekommen ihren eigenen Abstand — sie sind in Sekunden oben,
+// während eine VM erst ihr BIOS durchläuft.
+func TestStartupJeGastart(t *testing.T) {
+	general := "io_limits: off\nstartup:\n  mode: enforce\n  vm:\n    up: 45s\n  lxc:\n    up: 10s\n"
+
+	tests := []struct {
+		kind proxmox.Kind
+		want string
+	}{
+		{proxmox.KindQemu, "up=45"},
+		{proxmox.KindLXC, "up=10"},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			plan := applyTo(t, tc.kind, general, map[string]string{"onboot": "1"})
+
+			if got := plan.Fields()["startup"]; got != tc.want {
+				t.Errorf("startup = %q, erwartet %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Eine ausgenommene Gastart bleibt unangetastet.
+func TestStartupUebergehtAusgenommeneGastart(t *testing.T) {
+	general := "io_limits: off\nstartup:\n  mode: enforce\n  up: 30s\n  lxc:\n    up: 0\n"
+	plan := applyTo(t, proxmox.KindLXC, general, map[string]string{"onboot": "1"})
+
+	if got, written := plan.Fields()["startup"]; written {
+		t.Errorf("startup = %q, erwartet keine Änderung", got)
+	}
+}
+
+// Alles außer der Staffelung gibt es nur bei VMs. Ein "agent" in einer
+// Container-Konfiguration würde Proxmox zurückweisen — und damit die
+// ganze Änderung scheitern lassen.
+func TestNurStartupFasstContainerAn(t *testing.T) {
+	general := "" +
+		"io_limits: enforce\ndiscard: enforce\nssd: enforce\niothread: enforce\n" +
+		"guest_agent: enforce\nstartup:\n  mode: enforce\n  up: 10s\n"
+
+	plan := applyTo(t, proxmox.KindLXC, general, map[string]string{
+		"onboot": "1",
+		"rootfs": "local-zfs:subvol-200-disk-0,size=8G",
+		"mp0":    "local-zfs:subvol-200-disk-1,mp=/daten,size=100G",
+	})
+
+	fields := plan.Fields()
+	if len(fields) != 1 || fields["startup"] != "up=10" {
+		t.Errorf("Fields() = %v, erwartet nur startup=up=10", fields)
+	}
+	for _, note := range plan.Notes() {
+		if note.Rule != "startup" {
+			t.Errorf("regel %q hat sich an einem container zu schaffen gemacht: %+v", note.Rule, note)
+		}
 	}
 }

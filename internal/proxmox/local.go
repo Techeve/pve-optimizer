@@ -31,37 +31,38 @@ func (c *LocalClient) RecentTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
-func (c *LocalClient) ListVMs(ctx context.Context) ([]VM, error) {
+func (c *LocalClient) ListGuests(ctx context.Context) ([]Guest, error) {
+	// Die Ressourcenart "vm" umfasst bei Proxmox beides, VMs und Container.
 	output, err := c.run(ctx, "get", "/cluster/resources", "--type", "vm")
 	if err != nil {
-		return nil, fmt.Errorf("vm-liste abrufen: %w", err)
+		return nil, fmt.Errorf("gastliste abrufen: %w", err)
 	}
-	var all []VM
+	var all []Guest
 	if err := json.Unmarshal(output, &all); err != nil {
-		return nil, fmt.Errorf("vm-liste auswerten: %w", err)
+		return nil, fmt.Errorf("gastliste auswerten: %w", err)
 	}
-	return onlyQemu(all), nil
+	return onlyKnownKinds(all), nil
 }
 
-func (c *LocalClient) VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error) {
-	output, err := c.run(ctx, "get", vmPath(node, vmid))
+func (c *LocalClient) GuestConfig(ctx context.Context, node string, kind Kind, vmid int) (map[string]string, error) {
+	output, err := c.run(ctx, "get", guestPath(node, kind, vmid))
 	if err != nil {
-		return nil, fmt.Errorf("konfiguration von vm %d abrufen: %w", vmid, err)
+		return nil, fmt.Errorf("konfiguration von %s %d abrufen: %w", kind, vmid, err)
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(output, &raw); err != nil {
-		return nil, fmt.Errorf("konfiguration von vm %d auswerten: %w", vmid, err)
+		return nil, fmt.Errorf("konfiguration von %s %d auswerten: %w", kind, vmid, err)
 	}
 	return decodeConfig(raw), nil
 }
 
-func (c *LocalClient) UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error {
-	args := []string{"set", vmPath(node, vmid)}
+func (c *LocalClient) UpdateGuestConfig(ctx context.Context, node string, kind Kind, vmid int, fields map[string]string) error {
+	args := []string{"set", guestPath(node, kind, vmid)}
 	for key, value := range fields {
 		args = append(args, "-"+key, value)
 	}
 	if _, err := c.run(ctx, args...); err != nil {
-		return fmt.Errorf("konfiguration von vm %d schreiben: %w", vmid, err)
+		return fmt.Errorf("konfiguration von %s %d schreiben: %w", kind, vmid, err)
 	}
 	return nil
 }

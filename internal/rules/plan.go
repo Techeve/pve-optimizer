@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"pve-optimizer/internal/limits"
+	"pve-optimizer/internal/proxmox"
 )
 
 // Status sagt, was aus einem Vorschlag geworden ist.
@@ -24,7 +25,7 @@ const (
 // Note ist ein Eintrag fürs Protokoll.
 type Note struct {
 	Rule    string // Name der Regel
-	Key     string // Feld der VM-Konfiguration, etwa "scsi0" oder "agent"
+	Key     string // Feld der Konfiguration, etwa "scsi0" oder "agent"
 	Change  string // was ergänzt wird, etwa "discard=on"
 	Context string // Herkunft oder Grund, etwa "profil local-pool"
 	Status  Status
@@ -34,13 +35,14 @@ type Note struct {
 // Fundstelle, aus der es stammt.
 type Profiles func(storage string) (limits.Profile, string)
 
-// Plan ist der Entwurf für eine VM. Die Regeln tragen nacheinander ihre
+// Plan ist der Entwurf für einen Gast. Die Regeln tragen nacheinander ihre
 // Ergänzungen ein; geschrieben wird am Ende einmal.
 //
 // Der Grundsatz steckt hier und nicht in den einzelnen Regeln: Was bereits
 // gesetzt ist, wird nicht angerührt. Der Dienst ergänzt nur.
 type Plan struct {
 	Node string
+	Kind proxmox.Kind
 	VMID int
 
 	config   map[string]string
@@ -51,10 +53,11 @@ type Plan struct {
 	notes  []Note
 }
 
-// NewPlan liest die Konfiguration einer VM ein.
-func NewPlan(node string, vmid int, config map[string]string, profiles Profiles) *Plan {
+// NewPlan liest die Konfiguration eines Gastes ein.
+func NewPlan(node string, kind proxmox.Kind, vmid int, config map[string]string, profiles Profiles) *Plan {
 	plan := &Plan{
 		Node:     node,
+		Kind:     kind,
 		VMID:     vmid,
 		config:   config,
 		profiles: profiles,
@@ -72,11 +75,11 @@ func NewPlan(node string, vmid int, config map[string]string, profiles Profiles)
 	return plan
 }
 
-// Disks sind die Platten der VM, nach Bus sortiert. CD-ROM-Laufwerke sowie
+// Disks sind die Platten des Gastes, nach Bus sortiert. CD-ROM-Laufwerke sowie
 // efidisk, tpmstate und unused* sind nicht dabei.
 func (p *Plan) Disks() []*limits.Disk { return p.disks }
 
-// Value liefert einen Wert aus der VM-Konfiguration, etwa "scsihw".
+// Value liefert einen Wert aus der Konfiguration, etwa "scsihw".
 func (p *Plan) Value(key string) (string, bool) {
 	value, found := p.config[key]
 	return value, found
@@ -112,7 +115,7 @@ func (p *Plan) AddDiskOptions(rule Rule, disk *limits.Disk, options map[string]s
 	p.fields[disk.Key] = disk.Render()
 }
 
-// SetValue setzt ein Feld der VM-Konfiguration, wenn es noch fehlt.
+// SetValue setzt ein Feld der Konfiguration, wenn es noch fehlt.
 func (p *Plan) SetValue(rule Rule, key, value string) {
 	if _, set := p.config[key]; set {
 		return
@@ -170,7 +173,7 @@ func (p *Plan) record(rule Rule, key, change, context string) Status {
 	return status
 }
 
-// Fields sind die Felder, die in die VM-Konfiguration geschrieben werden.
+// Fields sind die Felder, die in die Konfiguration geschrieben werden.
 func (p *Plan) Fields() map[string]string { return p.fields }
 
 // Notes sind alle Vermerke der Regeln, in der Reihenfolge ihres Auftretens.

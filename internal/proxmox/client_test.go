@@ -73,8 +73,28 @@ func TestDecodeConfig(t *testing.T) {
 	}
 }
 
-func TestVMPath(t *testing.T) {
-	if got := vmPath("vmh02", 100); got != "/nodes/vmh02/qemu/100/config" {
-		t.Errorf("vmPath() = %q", got)
+// Die Gastart ist das Pfadsegment — VMs und Container liegen bei Proxmox
+// unter verschiedenen Pfaden.
+func TestGuestPath(t *testing.T) {
+	tests := map[Kind]string{
+		KindQemu: "/nodes/vmh02/qemu/100/config",
+		KindLXC:  "/nodes/vmh02/lxc/100/config",
+	}
+	for kind, want := range tests {
+		if got := guestPath("vmh02", kind, 100); got != want {
+			t.Errorf("guestPath(%q) = %q, erwartet %q", kind, got, want)
+		}
+	}
+}
+
+// Was weder VM noch Container ist, geht den Dienst nichts an.
+func TestOnlyKnownKinds(t *testing.T) {
+	got := onlyKnownKinds([]Guest{
+		{VMID: 100, Kind: KindQemu},
+		{VMID: 101, Kind: KindLXC},
+		{VMID: 102, Kind: "storage"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("onlyKnownKinds() = %v, erwartet zwei gäste", got)
 	}
 }

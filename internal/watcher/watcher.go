@@ -1,6 +1,6 @@
-// Package watcher beobachtet die Proxmox-Aufgaben und lässt nach jeder neu
-// angelegten oder wiederhergestellten VM die eingeschalteten Regeln über
-// sie laufen.
+// Package watcher beobachtet die Proxmox-Aufgaben und lässt nach jedem neu
+// angelegten oder wiederhergestellten Gast die eingeschalteten Regeln über
+// ihn laufen.
 package watcher
 
 import (
@@ -17,12 +17,17 @@ import (
 	"pve-optimizer/internal/rules"
 )
 
-// Aufgabentypen, nach denen eine VM neue Platten haben kann. Container
-// bleiben außen vor: Proxmox kennt für LXC keine Drosselung je Mountpoint.
-var relevantTasks = map[string]bool{
-	"qmcreate":  true,
-	"qmrestore": true,
-	"qmclone":   true,
+// Aufgabentypen, nach denen ein Gast frisch dasteht — und damit ohne die
+// Einstellungen, die Proxmox offenlässt. Der Typ verrät zugleich die
+// Gastart: Proxmox stellt den VM-Aufgaben "qm" voran, denen der Container
+// "vz".
+var relevantTasks = map[string]proxmox.Kind{
+	"qmcreate":  proxmox.KindQemu,
+	"qmrestore": proxmox.KindQemu,
+	"qmclone":   proxmox.KindQemu,
+	"vzcreate":  proxmox.KindLXC,
+	"vzrestore": proxmox.KindLXC,
+	"vzclone":   proxmox.KindLXC,
 }
 
 type Watcher struct {
@@ -32,7 +37,7 @@ type Watcher struct {
 	state  *State
 
 	// rules je Node. Die Regeln eines Nodes ändern sich zur Laufzeit nicht,
-	// bei einem Durchlauf über hunderte VMs lohnt sich das Merken.
+	// bei einem Durchlauf über hunderte Gäste lohnt sich das Merken.
 	rules map[string]rules.Set
 }
 
@@ -88,34 +93,34 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-// Sweep geht einmalig alle vorhandenen VMs durch und ergänzt fehlende
-// Begrenzungen. Gedacht für den Rollout: Die laufende Beobachtung greift
-// nur bei neuen Aufgaben, bestehende VMs blieben sonst ungedrosselt.
+// Sweep geht einmalig alle vorhandenen Gäste durch. Gedacht für den
+// Rollout: Die laufende Beobachtung greift nur bei neuen Aufgaben, an
+// bestehenden Gästen bliebe sonst alles, wie es ist.
 func (w *Watcher) Sweep(ctx context.Context) error {
-	all, err := w.client.ListVMs(ctx)
+	all, err := w.client.ListGuests(ctx)
 	if err != nil {
 		return err
 	}
 
-	var vms []proxmox.VM
-	for _, vm := range all {
-		if w.ownNode(vm.Node) {
-			vms = append(vms, vm)
+	var guests []proxmox.Guest
+	for _, guest := range all {
+		if w.ownNode(guest.Node) {
+			guests = append(guests, guest)
 		}
 	}
 
-	w.log.Info("durchlauf über alle vorhandenen vms",
-		"anzahl", len(vms), "im cluster", len(all),
+	w.log.Info("durchlauf über alle vorhandenen gäste",
+		"anzahl", len(guests), "im cluster", len(all),
 		"nur eigener node", w.cfg.RestrictedToOwnNode(), "regeln", w.modes())
 
 	var touched, failed int
-	for _, vm := range vms {
-		log := w.log.With("node", vm.Node, "vmid", vm.VMID, "name", vm.Name)
+	for _, guest := range guests {
+		log := w.log.With("node", guest.Node, "art", guest.Kind, "vmid", guest.VMID, "name", guest.Name)
 
-		changed, err := w.applyRules(ctx, vm.Node, vm.VMID, log)
+		changed, err := w.applyRules(ctx, guest.Node, guest.Kind, guest.VMID, log)
 		if err != nil {
-			// Eine einzelne VM darf den Durchlauf nicht abbrechen.
-			log.Error("vm nicht angepasst", "fehler", err)
+			// Ein einzelner Gast darf den Durchlauf nicht abbrechen.
+			log.Error("gast nicht angepasst", "fehler", err)
 			failed++
 			continue
 		}
@@ -125,9 +130,9 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	}
 
 	w.log.Info("durchlauf abgeschlossen",
-		"geprüft", len(vms), "angepasst", touched, "fehlgeschlagen", failed)
+		"geprüft", len(guests), "angepasst", touched, "fehlgeschlagen", failed)
 	if failed > 0 {
-		return fmt.Errorf("%d von %d vms konnten nicht angepasst werden", failed, len(vms))
+		return fmt.Errorf("%d von %d gästen konnten nicht angepasst werden", failed, len(guests))
 	}
 	return nil
 }
@@ -177,8 +182,9 @@ func (w *Watcher) checkOnce(ctx context.Context) error {
 // isNew filtert auf abgeschlossene, für uns relevante und noch nicht
 // gesehene Aufgaben.
 func (w *Watcher) isNew(task proxmox.Task) bool {
+	_, relevant := relevantTasks[task.Type]
 	return task.Finished() &&
-		relevantTasks[task.Type] &&
+		relevant &&
 		task.EndTime > w.state.LastEndTime &&
 		w.ownNode(task.Node)
 }
@@ -196,10 +202,11 @@ func (w *Watcher) handleTask(ctx context.Context, task proxmox.Task) error {
 		return fmt.Errorf("aufgabe %s hat keine auswertbare vmid %q", task.Type, task.ID)
 	}
 
-	log := w.log.With("node", task.Node, "vmid", vmid, "aufgabe", task.Type)
-	log.Info("vm fertiggestellt, regeln werden geprüft")
+	kind := relevantTasks[task.Type]
+	log := w.log.With("node", task.Node, "art", kind, "vmid", vmid, "aufgabe", task.Type)
+	log.Info("gast fertiggestellt, regeln werden geprüft")
 
-	changed, err := w.applyRules(ctx, task.Node, vmid, log)
+	changed, err := w.applyRules(ctx, task.Node, kind, vmid, log)
 	if err != nil {
 		return err
 	}
@@ -211,19 +218,21 @@ func (w *Watcher) handleTask(ctx context.Context, task proxmox.Task) error {
 	return nil
 }
 
-// applyRules lässt die Regeln des Nodes über eine VM laufen und liefert,
-// wie viele Felder ihrer Konfiguration geändert wurden.
-func (w *Watcher) applyRules(ctx context.Context, node string, vmid int, log *slog.Logger) (int, error) {
+// applyRules lässt die Regeln des Nodes über einen Gast laufen und
+// liefert, wie viele Felder seiner Konfiguration geändert wurden.
+func (w *Watcher) applyRules(
+	ctx context.Context, node string, kind proxmox.Kind, vmid int, log *slog.Logger,
+) (int, error) {
 	set, err := w.rulesFor(node)
 	if err != nil {
 		return 0, err
 	}
-	vmConfig, err := w.client.VMConfig(ctx, node, vmid)
+	guestConfig, err := w.client.GuestConfig(ctx, node, kind, vmid)
 	if err != nil {
 		return 0, err
 	}
 
-	plan := rules.NewPlan(node, vmid, vmConfig, func(storage string) (limits.Profile, string) {
+	plan := rules.NewPlan(node, kind, vmid, guestConfig, func(storage string) (limits.Profile, string) {
 		return w.cfg.ProfileFor(node, storage)
 	})
 	set.Apply(plan)
@@ -233,7 +242,7 @@ func (w *Watcher) applyRules(ctx context.Context, node string, vmid int, log *sl
 	if len(fields) == 0 {
 		return 0, nil
 	}
-	if err := w.client.UpdateVMConfig(ctx, node, vmid, fields); err != nil {
+	if err := w.client.UpdateGuestConfig(ctx, node, kind, vmid, fields); err != nil {
 		return 0, err
 	}
 	return len(fields), nil

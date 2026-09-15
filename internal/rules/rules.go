@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"pve-optimizer/internal/proxmox"
 )
 
 // Mode bestimmt, wie weit eine Regel geht.
@@ -49,24 +51,43 @@ type Rule interface {
 	Mode() Mode
 	// Check weist unsinnige Optionen ab, bevor der Dienst startet.
 	Check() error
-	// Apply trägt an der VM nach, was der Regel zufolge fehlt.
+	// AppliesTo meldet, ob die Regel für diese Gastart überhaupt gilt.
+	AppliesTo(kind proxmox.Kind) bool
+	// Apply trägt am Gast nach, was der Regel zufolge fehlt.
 	Apply(plan *Plan)
 
 	setMode(Mode)
 }
 
-// Base trägt, was jede Regel hat. Der Name kommt aus dem Katalog, der
-// Modus aus der Konfiguration.
+// Base trägt, was jede Regel hat. Name und Gastarten kommen aus dem
+// Katalog, der Modus aus der Konfiguration.
 type Base struct {
 	RuleMode Mode `yaml:"mode"`
 
 	name string
+	// kinds sind die Gastarten, für die die Regel gilt. Leer heißt: beide.
+	kinds []proxmox.Kind
 }
 
 func (b *Base) Name() string   { return b.name }
 func (b *Base) Mode() Mode     { return b.RuleMode }
 func (b *Base) Check() error   { return nil }
 func (b *Base) setMode(m Mode) { b.RuleMode = m }
+
+// AppliesTo meldet, ob die Regel für diese Gastart gilt. Das meiste, was
+// der Dienst ergänzt, gibt es nur bei VMs — Proxmox kennt für Container
+// weder Drosselung je Mountpoint noch einen Gast-Agenten.
+func (b *Base) AppliesTo(kind proxmox.Kind) bool {
+	if len(b.kinds) == 0 {
+		return true
+	}
+	for _, known := range b.kinds {
+		if known == kind {
+			return true
+		}
+	}
+	return false
+}
 
 // catalog sind alle Regeln in der Reihenfolge, in der sie laufen. Sie
 // greifen auf verschiedene Felder zu und sind voneinander unabhängig; die
@@ -75,12 +96,18 @@ func (b *Base) setMode(m Mode) { b.RuleMode = m }
 // Die Vorgabemodi sind bewusst zurückhaltend: Nur die IO-Begrenzung ist
 // von Haus aus scharf, alles Weitere schaltet frei, wer es haben will.
 var catalog = []func() Rule{
-	func() Rule { return &ioLimits{Base: Base{name: "io_limits", RuleMode: ModeEnforce}} },
-	func() Rule { return &discard{Base: Base{name: "discard", RuleMode: ModeOff}} },
-	func() Rule { return &ssd{Base: Base{name: "ssd", RuleMode: ModeOff}} },
-	func() Rule { return &iothread{Base: Base{name: "iothread", RuleMode: ModeOff}} },
-	func() Rule { return &guestAgent{Base: Base{name: "guest_agent", RuleMode: ModeOff}} },
+	func() Rule { return &ioLimits{Base: qemuOnly("io_limits", ModeEnforce)} },
+	func() Rule { return &discard{Base: qemuOnly("discard", ModeOff)} },
+	func() Rule { return &ssd{Base: qemuOnly("ssd", ModeOff)} },
+	func() Rule { return &iothread{Base: qemuOnly("iothread", ModeOff)} },
+	func() Rule { return &guestAgent{Base: qemuOnly("guest_agent", ModeOff)} },
+	// Die einzige Regel, die auch Container betrifft: Ein Node fährt beide
+	// Gastarten gemeinsam hoch, gestaffelt werden muss deshalb auch beides.
 	func() Rule { return &startup{Base: Base{name: "startup", RuleMode: ModeOff}} },
+}
+
+func qemuOnly(name string, mode Mode) Base {
+	return Base{name: name, RuleMode: mode, kinds: []proxmox.Kind{proxmox.KindQemu}}
 }
 
 // Set sind die Regeln eines Nodes, in der Reihenfolge des Katalogs.
@@ -200,10 +227,11 @@ func optionNames(rule Rule) map[string]bool {
 	return names
 }
 
-// Apply lässt alle eingeschalteten Regeln über den Entwurf laufen.
+// Apply lässt alle eingeschalteten Regeln über den Entwurf laufen, soweit
+// sie für dessen Gastart gelten.
 func (s Set) Apply(plan *Plan) {
 	for _, rule := range s {
-		if rule.Mode() == ModeOff {
+		if rule.Mode() == ModeOff || !rule.AppliesTo(plan.Kind) {
 			continue
 		}
 		rule.Apply(plan)
