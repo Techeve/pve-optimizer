@@ -168,6 +168,67 @@ rules:
       up: 10s
 
 # ---------------------------------------------------------------------------
+# Dienst-Monitor
+# ---------------------------------------------------------------------------
+#
+# Holt abgestürzte systemd-Dienste des Nodes wieder hoch. Hintergrund ist
+# eine Eigenheit von Proxmox: Units wie pvestatd.service bringen kein
+# "Restart=" mit. Stirbt so ein Dienst an einem Signal, bleibt er liegen,
+# bis jemand ihn von Hand startet.
+#
+# Blind endlos neu starten hilft aber auch nicht — ein Dienst, der immer
+# wieder stirbt, hat eine Ursache, die ein Neustart nicht behebt. Deshalb
+# zählt der Monitor mit, steigt nach "restart_limit" Versuchen aus und
+# meldet sich dann bei einem Menschen.
+#
+# Derselbe Modus wie bei den Regeln:
+#
+#   off       der Monitor läuft nicht (Vorgabe)
+#   report    er schreibt den Absturz ins Protokoll, startet aber nichts
+#             neu und verschickt auch keine Mail
+#   enforce   er startet neu und meldet
+#
+# dry_run oben senkt ihn wie jede Regel auf "report" ab.
+#
+# Er sieht immer nur die Maschine, auf der er läuft — bei mode: api also
+# nicht zwangsläufig den Node, dessen Gäste der Dienst betreut.
+#
+# services:
+#   mode: enforce
+#
+#   # Die zu überwachenden Units. Ein von Hand angehaltener Dienst steht
+#   # auf "inactive" und bleibt unangetastet; hochgeholt wird nur, was
+#   # systemd als fehlgeschlagen führt.
+#   units:
+#     - pvestatd.service
+#
+#   # So viele Neustarts je Dienst, dann ist Schluss.
+#   restart_limit: 3
+#
+#   # Läuft der Dienst so lange am Stück, gilt er wieder als gesund: Der
+#   # Zähler fällt auf null, die nächste Störung beginnt von vorn.
+#   stable_after: 24h
+#
+#   # Wohin die Meldung geht, wenn die Grenze erreicht ist. Ohne diesen
+#   # Abschnitt bleibt sie im Protokoll.
+#   #
+#   # Bewusst ein eigener Zugang statt des sendmail des Nodes: Ein frisch
+#   # aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
+#   # und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg
+#   # landet in der Warteschlange und nie bei einem Menschen.
+#   mail:
+#     to: admin@example.com
+#     from: pve-optimizer@example.com
+#     server: mail.example.com:25
+#     # Nur, wenn der Server eine Anmeldung verlangt. Das Passwort gehört
+#     # nicht hierher, sondern in die Umgebungsvariable
+#     # PVE_OPTIMIZER_SMTP_PASSWORD (siehe systemd-Unit im README).
+#     username: ""
+#
+# Der Zählerstand liegt neben dem Stand der Aufgabenliste, als
+# services.json im Verzeichnis von "state_file" oben.
+
+# ---------------------------------------------------------------------------
 # Abweichungen je Node
 # ---------------------------------------------------------------------------
 #
@@ -197,6 +258,11 @@ rules:
 #       startup:
 #         lxc:
 #           up: 5s
+#     # Dieser Node hat eine Vorgeschichte mit abstürzenden Diensten —
+#     # hier darf der Monitor schärfer sein als im Rest des Clusters.
+#     services:
+#       mode: enforce
+#       restart_limit: 5
 #     pools:
 #       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
 #       local-pool:
