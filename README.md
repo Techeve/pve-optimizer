@@ -162,13 +162,14 @@ jede scharfe Regel auf `report` ab.
 | `iothread` | `iothread=1` | VMs | — |
 | `guest_agent` | `agent=1` | VMs | `fstrim_cloned_disks` |
 | `startup` | `up=<sekunden>` im Feld `startup` | VMs **und Container** | `up`, `vm`, `lxc` |
+| `net_rate` | `rate=<MB/s>` an jeder Netzwerkkarte | VMs **und Container** | `rate`, `vm`, `lxc` |
 
 Ein `pools`-Eintrag schränkt die Regel auf die genannten Speicherpools
 ein; ohne ihn gilt sie für alle.
 
-Bis auf die Staffelung betrifft alles nur VMs: Proxmox kennt für Container
-weder eine Drosselung je Mountpoint noch einen Gast-Agenten. Eine Regel,
-die für die Gastart nicht gilt, läuft dort erst gar nicht.
+Bis auf Staffelung und Netzbegrenzung betrifft alles nur VMs: Proxmox kennt
+für Container weder eine Drosselung je Mountpoint noch einen Gast-Agenten.
+Eine Regel, die für die Gastart nicht gilt, läuft dort erst gar nicht.
 
 Zu den einzelnen Regeln:
 
@@ -219,8 +220,45 @@ Angefasst wird nur, was `onboot: 1` trägt — ob ein Gast mitstarten soll,
 entscheidet der Betreiber, und eine fehlende Angabe ist hier keine
 vergessene Einstellung.
 
+**`net_rate`** begrenzt den Durchsatz je Netzwerkkarte. Ohne Begrenzung
+zieht ein einzelner Gast die Leitung des Nodes leer — ein Backup, ein Klon
+oder ein durchgedrehter Dienst genügt, und alle anderen Gäste auf derselben
+Brücke hängen mit. Das ist dasselbe Problem, gegen das `io_limits` an der
+Platte arbeitet, nur eine Etage weiter.
+
+Proxmox kennt `rate` bei VMs und Containern gleichermaßen, deshalb gilt die
+Regel für beide — getrennt einstellbar wie die Staffelung:
+
+```yaml
+rules:
+  net_rate:
+    mode: enforce
+    rate: 125        # gilt für beide, solange darunter nichts steht
+    vm:
+      rate: 200      # nur VMs
+    lxc:
+      rate: 12.5     # nur Container
+```
+
+**Die Einheit ist Megabyte je Sekunde**, so wie Proxmox sie führt — nicht
+Megabit. Eine Gigabit-Leitung sind also `125`, 100 Mbit/s sind `12.5`.
+Nachkommastellen sind erlaubt.
+
+Eine Rate von `0` heißt hier wie überall: nicht setzen. `lxc: {rate: 0}`
+lässt Container also ganz in Ruhe.
+
+Ergänzt wird an **jeder** Netzwerkkarte des Gastes, die noch keine
+Begrenzung trägt — `net0`, `net1` und so fort. Eine bereits gesetzte Rate
+bleibt unangetastet, auch eine höhere.
+
+Was die Regel **nicht** kann: nach Brücke unterscheiden. Hängt ein Gast mit
+einer Karte am 1G-LAN und mit einer zweiten am 10G-Speichernetz, bekommen
+beide denselben Wert. Wer das braucht, setzt die zweite Karte von Hand —
+gesetzte Werte rührt der Dienst nicht an.
+
 Zwei Felder wirken erst beim nächsten Start der VM: `iothread` und der
-Gast-Agent. Der Dienst startet dafür **nichts** neu.
+Gast-Agent. Der Dienst startet dafür **nichts** neu. Eine geänderte
+`rate` greift dagegen sofort.
 
 ### Dienst-Monitor
 
