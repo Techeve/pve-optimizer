@@ -14,34 +14,23 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"pve-optimizer/internal/mode"
 	"pve-optimizer/internal/proxmox"
 )
 
-// Mode bestimmt, wie weit eine Regel geht.
-type Mode string
+// Mode bestimmt, wie weit eine Regel geht. Denselben Schalter benutzt der
+// Dienst-Monitor, deshalb liegt er in einem eigenen Paket.
+type Mode = mode.Mode
 
 const (
 	// ModeOff schaltet die Regel ab.
-	ModeOff Mode = "off"
+	ModeOff = mode.Off
 	// ModeReport protokolliert, was die Regel ergänzen würde, schreibt aber
 	// nichts.
-	ModeReport Mode = "report"
+	ModeReport = mode.Report
 	// ModeEnforce schreibt die fehlenden Werte in die VM-Konfiguration.
-	ModeEnforce Mode = "enforce"
+	ModeEnforce = mode.Enforce
 )
-
-// UnmarshalYAML liest den Modus aus dem rohen Knotenwert statt über die
-// übliche Auflösung. Nötig wegen "off": YAML kennt das seit Version 1.1
-// als Wahrheitswert, und der ließe sich nicht in einen String einlesen.
-func (m *Mode) UnmarshalYAML(node *yaml.Node) error {
-	switch Mode(node.Value) {
-	case ModeOff, ModeReport, ModeEnforce:
-		*m = Mode(node.Value)
-		return nil
-	}
-	return fmt.Errorf("unbekannter modus %q, erlaubt sind %s, %s und %s",
-		node.Value, ModeOff, ModeReport, ModeEnforce)
-}
 
 // Rule ist eine einzelne Prüfung an einer VM.
 type Rule interface {

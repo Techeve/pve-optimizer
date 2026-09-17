@@ -33,7 +33,7 @@ func build(t *testing.T, general, node string) Set {
 	return set
 }
 
-func mode(t *testing.T, set Set, name string) Mode {
+func modeOf(t *testing.T, set Set, name string) Mode {
 	t.Helper()
 	for _, rule := range set {
 		if rule.Name() == name {
@@ -49,11 +49,11 @@ func mode(t *testing.T, set Set, name string) Mode {
 func TestBuildVorgabemodi(t *testing.T) {
 	set := build(t, "", "")
 
-	if got := mode(t, set, "io_limits"); got != ModeEnforce {
+	if got := modeOf(t, set, "io_limits"); got != ModeEnforce {
 		t.Errorf("io_limits = %q, erwartet %q", got, ModeEnforce)
 	}
 	for _, name := range []string{"discard", "ssd", "iothread", "guest_agent", "startup"} {
-		if got := mode(t, set, name); got != ModeOff {
+		if got := modeOf(t, set, name); got != ModeOff {
 			t.Errorf("%s = %q, erwartet %q", name, got, ModeOff)
 		}
 	}
@@ -62,10 +62,10 @@ func TestBuildVorgabemodi(t *testing.T) {
 func TestBuildKurzformUndLangform(t *testing.T) {
 	set := build(t, "discard: enforce\nssd:\n  mode: report\n  pools: [nvme]\n", "")
 
-	if got := mode(t, set, "discard"); got != ModeEnforce {
+	if got := modeOf(t, set, "discard"); got != ModeEnforce {
 		t.Errorf("discard = %q, erwartet %q", got, ModeEnforce)
 	}
-	if got := mode(t, set, "ssd"); got != ModeReport {
+	if got := modeOf(t, set, "ssd"); got != ModeReport {
 		t.Errorf("ssd = %q, erwartet %q", got, ModeReport)
 	}
 }
@@ -96,7 +96,7 @@ func TestBuildNodeUeberschreibtNurGenanntes(t *testing.T) {
 func TestBuildOffIstKeinWahrheitswert(t *testing.T) {
 	set := build(t, "io_limits: off\n", "")
 
-	if got := mode(t, set, "io_limits"); got != ModeOff {
+	if got := modeOf(t, set, "io_limits"); got != ModeOff {
 		t.Errorf("io_limits = %q, erwartet %q", got, ModeOff)
 	}
 }
@@ -142,10 +142,10 @@ func TestStartupBrauchtEinenAbstand(t *testing.T) {
 func TestReportOnlySenktScharfeRegelnAb(t *testing.T) {
 	set := build(t, "discard: enforce\niothread: report\nssd: off\n", "").ReportOnly()
 
-	if got := mode(t, set, "discard"); got != ModeReport {
+	if got := modeOf(t, set, "discard"); got != ModeReport {
 		t.Errorf("discard = %q, erwartet %q", got, ModeReport)
 	}
-	if got := mode(t, set, "ssd"); got != ModeOff {
+	if got := modeOf(t, set, "ssd"); got != ModeOff {
 		t.Errorf("ssd = %q, erwartet %q — ein Probelauf schaltet nichts ein", got, ModeOff)
 	}
 }
