@@ -79,6 +79,34 @@ func NewPlan(node string, kind proxmox.Kind, vmid int, config map[string]string,
 // efidisk, tpmstate und unused* sind nicht dabei.
 func (p *Plan) Disks() []*limits.Disk { return p.disks }
 
+// Networks sind die Netzwerkkarten des Gastes, nach Nummer sortiert.
+// Proxmox führt sie bei beiden Gastarten als "net0", "net1" und so fort.
+func (p *Plan) Networks() []string {
+	var keys []string
+	for key := range p.config {
+		if isNetwork(key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isNetwork erkennt "net0" bis "net31" — und nur die. Was hinter "net"
+// keine reine Zahl trägt, ist keine Netzwerkkarte.
+func isNetwork(key string) bool {
+	digits, found := strings.CutPrefix(key, "net")
+	if !found || digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Value liefert einen Wert aus der Konfiguration, etwa "scsihw".
 func (p *Plan) Value(key string) (string, bool) {
 	value, found := p.config[key]

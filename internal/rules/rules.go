@@ -90,9 +90,11 @@ var catalog = []func() Rule{
 	func() Rule { return &ssd{Base: qemuOnly("ssd", ModeOff)} },
 	func() Rule { return &iothread{Base: qemuOnly("iothread", ModeOff)} },
 	func() Rule { return &guestAgent{Base: qemuOnly("guest_agent", ModeOff)} },
-	// Die einzige Regel, die auch Container betrifft: Ein Node fährt beide
-	// Gastarten gemeinsam hoch, gestaffelt werden muss deshalb auch beides.
+	// Die beiden Regeln, die auch Container betreffen: Ein Node fährt
+	// beide Gastarten gemeinsam hoch, und "rate" kennt Proxmox an der
+	// Netzwerkkarte einer VM wie an der eines Containers.
 	func() Rule { return &startup{Base: Base{name: "startup", RuleMode: ModeOff}} },
+	func() Rule { return &netRate{Base: Base{name: "net_rate", RuleMode: ModeOff}} },
 }
 
 func qemuOnly(name string, mode Mode) Base {
