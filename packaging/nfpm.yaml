@@ -9,7 +9,7 @@ platform: linux
 version: "${PVE_OPTIMIZER_VERSION}"
 section: admin
 priority: optional
-maintainer: "Techeve <claude@techeve.de>"
+maintainer: "Techeve <ci@techeve.de>"
 vendor: "Techeve"
 homepage: "https://gitlab.techeve.de/techeve/pve-optimizer"
 license: "proprietary"
