@@ -9,36 +9,51 @@ import (
 	"strconv"
 )
 
+// Kind ist die Gastart. Proxmox führt VMs und Container getrennt: Die
+// Konfiguration liegt je Art unter einem eigenen Pfad, und nicht jede
+// Einstellung gibt es bei beiden.
+type Kind string
+
+const (
+	// KindQemu ist eine virtuelle Maschine.
+	KindQemu Kind = "qemu"
+	// KindLXC ist ein Container.
+	KindLXC Kind = "lxc"
+)
+
 // Client ist der Zugriff auf Proxmox, den der Dienst braucht.
 type Client interface {
 	// RecentTasks liefert die jüngsten Aufgaben des Clusters.
 	RecentTasks(ctx context.Context) ([]Task, error)
-	// ListVMs liefert alle VMs des Clusters, Container ausgenommen.
-	ListVMs(ctx context.Context) ([]VM, error)
-	// VMConfig liefert die Konfiguration einer VM als Schlüssel-Wert-Paare.
-	VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error)
-	// UpdateVMConfig schreibt die übergebenen Felder in die VM-Konfiguration.
-	UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error
+	// ListGuests liefert alle Gäste des Clusters — VMs und Container.
+	ListGuests(ctx context.Context) ([]Guest, error)
+	// GuestConfig liefert die Konfiguration eines Gastes als
+	// Schlüssel-Wert-Paare.
+	GuestConfig(ctx context.Context, node string, kind Kind, vmid int) (map[string]string, error)
+	// UpdateGuestConfig schreibt die übergebenen Felder in die
+	// Konfiguration des Gastes.
+	UpdateGuestConfig(ctx context.Context, node string, kind Kind, vmid int, fields map[string]string) error
 }
 
-// VM ist ein Gast aus der Ressourcenliste des Clusters.
-type VM struct {
+// Guest ist ein Gast aus der Ressourcenliste des Clusters.
+type Guest struct {
 	VMID int    `json:"vmid"`
 	Node string `json:"node"`
 	Name string `json:"name"`
-	Type string `json:"type"`
+	Kind Kind   `json:"type"`
 }
 
-// onlyQemu wirft Container heraus: Proxmox kennt für LXC keine Drosselung
-// je Mountpoint.
-func onlyQemu(all []VM) []VM {
-	var vms []VM
-	for _, vm := range all {
-		if vm.Type == "qemu" {
-			vms = append(vms, vm)
+// onlyKnownKinds wirft heraus, was weder VM noch Container ist. Proxmox
+// führt beide unter der Ressourcenart "vm"; was dort künftig sonst noch
+// auftaucht, geht den Dienst nichts an.
+func onlyKnownKinds(all []Guest) []Guest {
+	var guests []Guest
+	for _, guest := range all {
+		if guest.Kind == KindQemu || guest.Kind == KindLXC {
+			guests = append(guests, guest)
 		}
 	}
-	return vms
+	return guests
 }
 
 // Task ist eine Proxmox-Aufgabe, so weit der Dienst sie auswertet.
@@ -57,8 +72,8 @@ func (t Task) Finished() bool {
 	return t.EndTime > 0 && t.Status == "OK"
 }
 
-// VMID liefert die Nummer der VM, auf die sich die Aufgabe bezieht. Bei
-// Aufgaben ohne VM-Bezug ist der zweite Rückgabewert false.
+// VMID liefert die Nummer des Gastes, auf den sich die Aufgabe bezieht.
+// Bei Aufgaben ohne Gastbezug ist der zweite Rückgabewert false.
 func (t Task) VMID() (int, bool) {
 	id, err := strconv.Atoi(t.ID)
 	if err != nil {
@@ -88,7 +103,8 @@ func decodeConfig(raw map[string]json.RawMessage) map[string]string {
 	return config
 }
 
-// vmPath ist der API-Pfad zur Konfiguration einer VM.
-func vmPath(node string, vmid int) string {
-	return fmt.Sprintf("/nodes/%s/qemu/%d/config", node, vmid)
+// guestPath ist der API-Pfad zur Konfiguration eines Gastes. Die Gastart
+// ist dabei das Pfadsegment — "qemu" oder "lxc".
+func guestPath(node string, kind Kind, vmid int) string {
+	return fmt.Sprintf("/nodes/%s/%s/%d/config", node, kind, vmid)
 }

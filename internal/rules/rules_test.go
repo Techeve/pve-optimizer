@@ -3,8 +3,11 @@ package rules
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"pve-optimizer/internal/proxmox"
 )
 
 // settings liest einen YAML-Ausschnitt so ein, wie ihn die Konfiguration
@@ -30,7 +33,7 @@ func build(t *testing.T, general, node string) Set {
 	return set
 }
 
-func mode(t *testing.T, set Set, name string) Mode {
+func modeOf(t *testing.T, set Set, name string) Mode {
 	t.Helper()
 	for _, rule := range set {
 		if rule.Name() == name {
@@ -46,11 +49,11 @@ func mode(t *testing.T, set Set, name string) Mode {
 func TestBuildVorgabemodi(t *testing.T) {
 	set := build(t, "", "")
 
-	if got := mode(t, set, "io_limits"); got != ModeEnforce {
+	if got := modeOf(t, set, "io_limits"); got != ModeEnforce {
 		t.Errorf("io_limits = %q, erwartet %q", got, ModeEnforce)
 	}
 	for _, name := range []string{"discard", "ssd", "iothread", "guest_agent", "startup"} {
-		if got := mode(t, set, name); got != ModeOff {
+		if got := modeOf(t, set, name); got != ModeOff {
 			t.Errorf("%s = %q, erwartet %q", name, got, ModeOff)
 		}
 	}
@@ -59,10 +62,10 @@ func TestBuildVorgabemodi(t *testing.T) {
 func TestBuildKurzformUndLangform(t *testing.T) {
 	set := build(t, "discard: enforce\nssd:\n  mode: report\n  pools: [nvme]\n", "")
 
-	if got := mode(t, set, "discard"); got != ModeEnforce {
+	if got := modeOf(t, set, "discard"); got != ModeEnforce {
 		t.Errorf("discard = %q, erwartet %q", got, ModeEnforce)
 	}
-	if got := mode(t, set, "ssd"); got != ModeReport {
+	if got := modeOf(t, set, "ssd"); got != ModeReport {
 		t.Errorf("ssd = %q, erwartet %q", got, ModeReport)
 	}
 }
@@ -93,7 +96,7 @@ func TestBuildNodeUeberschreibtNurGenanntes(t *testing.T) {
 func TestBuildOffIstKeinWahrheitswert(t *testing.T) {
 	set := build(t, "io_limits: off\n", "")
 
-	if got := mode(t, set, "io_limits"); got != ModeOff {
+	if got := modeOf(t, set, "io_limits"); got != ModeOff {
 		t.Errorf("io_limits = %q, erwartet %q", got, ModeOff)
 	}
 }
@@ -139,10 +142,106 @@ func TestStartupBrauchtEinenAbstand(t *testing.T) {
 func TestReportOnlySenktScharfeRegelnAb(t *testing.T) {
 	set := build(t, "discard: enforce\niothread: report\nssd: off\n", "").ReportOnly()
 
-	if got := mode(t, set, "discard"); got != ModeReport {
+	if got := modeOf(t, set, "discard"); got != ModeReport {
 		t.Errorf("discard = %q, erwartet %q", got, ModeReport)
 	}
-	if got := mode(t, set, "ssd"); got != ModeOff {
+	if got := modeOf(t, set, "ssd"); got != ModeOff {
 		t.Errorf("ssd = %q, erwartet %q — ein Probelauf schaltet nichts ein", got, ModeOff)
 	}
+}
+
+// Der Abstand lässt sich je Gastart getrennt setzen; wo nichts Genaueres
+// steht, gilt der allgemeine Wert.
+func TestStartupAbstandJeGastart(t *testing.T) {
+	tests := []struct {
+		name    string
+		general string
+		wantVM  time.Duration
+		wantLXC time.Duration
+	}{
+		{
+			name:    "nur ein allgemeiner wert",
+			general: "startup:\n  mode: enforce\n  up: 30s\n",
+			wantVM:  30 * time.Second,
+			wantLXC: 30 * time.Second,
+		},
+		{
+			name:    "getrennt je gastart",
+			general: "startup:\n  mode: enforce\n  vm:\n    up: 45s\n  lxc:\n    up: 10s\n",
+			wantVM:  45 * time.Second,
+			wantLXC: 10 * time.Second,
+		},
+		{
+			name:    "allgemeiner wert, eine gastart weicht ab",
+			general: "startup:\n  mode: enforce\n  up: 30s\n  lxc:\n    up: 5s\n",
+			wantVM:  30 * time.Second,
+			wantLXC: 5 * time.Second,
+		},
+		{
+			name:    "container ausgenommen",
+			general: "startup:\n  mode: enforce\n  up: 30s\n  lxc:\n    up: 0\n",
+			wantVM:  30 * time.Second,
+			wantLXC: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := startupRule(t, build(t, tc.general, ""))
+
+			if got := rule.delayFor(proxmox.KindQemu); got != tc.wantVM {
+				t.Errorf("vm = %s, erwartet %s", got, tc.wantVM)
+			}
+			if got := rule.delayFor(proxmox.KindLXC); got != tc.wantLXC {
+				t.Errorf("lxc = %s, erwartet %s", got, tc.wantLXC)
+			}
+		})
+	}
+}
+
+// Ein Node darf auch an der verschachtelten Angabe abweichen, ohne den
+// Rest der Regel zu wiederholen.
+func TestStartupNodeWeichtJeGastartAb(t *testing.T) {
+	set := build(t,
+		"startup:\n  mode: enforce\n  vm:\n    up: 45s\n  lxc:\n    up: 10s\n",
+		"startup:\n  lxc:\n    up: 3s\n")
+	rule := startupRule(t, set)
+
+	if got := rule.delayFor(proxmox.KindLXC); got != 3*time.Second {
+		t.Errorf("lxc = %s, erwartet 3s vom node", got)
+	}
+	if got := rule.delayFor(proxmox.KindQemu); got != 45*time.Second {
+		t.Errorf("vm = %s, erwartet 45s aus der allgemeinen einstellung", got)
+	}
+	if rule.Mode() != ModeEnforce {
+		t.Errorf("modus = %q, erwartet %q", rule.Mode(), ModeEnforce)
+	}
+}
+
+func TestStartupWeistUnsinnigeAbstaendeAb(t *testing.T) {
+	tests := map[string]string{
+		"gar kein abstand":      "startup: enforce\n",
+		"beide gastarten aus":   "startup:\n  mode: enforce\n  vm:\n    up: 0\n  lxc:\n    up: 0\n",
+		"unter einer sekunde":   "startup:\n  mode: enforce\n  up: 500ms\n",
+		"eine gastart zu knapp": "startup:\n  mode: enforce\n  up: 30s\n  lxc:\n    up: 200ms\n",
+	}
+
+	for name, general := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Build(settings(t, general), nil); err == nil {
+				t.Error("Build() = nil, erwartet einen Fehler")
+			}
+		})
+	}
+}
+
+func startupRule(t *testing.T, set Set) *startup {
+	t.Helper()
+	for _, rule := range set {
+		if known, ok := rule.(*startup); ok {
+			return known
+		}
+	}
+	t.Fatal("startup-regel fehlt im satz")
+	return nil
 }

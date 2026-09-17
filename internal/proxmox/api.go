@@ -42,29 +42,30 @@ func (c *APIClient) RecentTasks(ctx context.Context) ([]Task, error) {
 	return tasks, nil
 }
 
-func (c *APIClient) ListVMs(ctx context.Context) ([]VM, error) {
-	var all []VM
+func (c *APIClient) ListGuests(ctx context.Context) ([]Guest, error) {
+	// Die Ressourcenart "vm" umfasst bei Proxmox beides, VMs und Container.
+	var all []Guest
 	if err := c.request(ctx, http.MethodGet, "/cluster/resources?type=vm", nil, &all); err != nil {
-		return nil, fmt.Errorf("vm-liste abrufen: %w", err)
+		return nil, fmt.Errorf("gastliste abrufen: %w", err)
 	}
-	return onlyQemu(all), nil
+	return onlyKnownKinds(all), nil
 }
 
-func (c *APIClient) VMConfig(ctx context.Context, node string, vmid int) (map[string]string, error) {
+func (c *APIClient) GuestConfig(ctx context.Context, node string, kind Kind, vmid int) (map[string]string, error) {
 	var raw map[string]json.RawMessage
-	if err := c.request(ctx, http.MethodGet, vmPath(node, vmid), nil, &raw); err != nil {
-		return nil, fmt.Errorf("konfiguration von vm %d abrufen: %w", vmid, err)
+	if err := c.request(ctx, http.MethodGet, guestPath(node, kind, vmid), nil, &raw); err != nil {
+		return nil, fmt.Errorf("konfiguration von %s %d abrufen: %w", kind, vmid, err)
 	}
 	return decodeConfig(raw), nil
 }
 
-func (c *APIClient) UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error {
+func (c *APIClient) UpdateGuestConfig(ctx context.Context, node string, kind Kind, vmid int, fields map[string]string) error {
 	form := url.Values{}
 	for key, value := range fields {
 		form.Set(key, value)
 	}
-	if err := c.request(ctx, http.MethodPut, vmPath(node, vmid), strings.NewReader(form.Encode()), nil); err != nil {
-		return fmt.Errorf("konfiguration von vm %d schreiben: %w", vmid, err)
+	if err := c.request(ctx, http.MethodPut, guestPath(node, kind, vmid), strings.NewReader(form.Encode()), nil); err != nil {
+		return fmt.Errorf("konfiguration von %s %d schreiben: %w", kind, vmid, err)
 	}
 	return nil
 }

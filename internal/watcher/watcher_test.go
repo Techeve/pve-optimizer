@@ -19,24 +19,33 @@ import (
 // fakeClient ersetzt Proxmox im Test und merkt sich, was geschrieben wurde.
 type fakeClient struct {
 	tasks   []proxmox.Task
-	vms     []proxmox.VM
+	guests  []proxmox.Guest
 	configs map[int]map[string]string
 	updates map[int]map[string]string
+	// kinds merkt sich, unter welcher Gastart ein Gast angefasst wurde —
+	// VMs und Container liegen bei Proxmox unter verschiedenen Pfaden.
+	kinds map[int]proxmox.Kind
 }
 
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
 }
 
-func (f *fakeClient) ListVMs(context.Context) ([]proxmox.VM, error) {
-	return f.vms, nil
+func (f *fakeClient) ListGuests(context.Context) ([]proxmox.Guest, error) {
+	return f.guests, nil
 }
 
-func (f *fakeClient) VMConfig(_ context.Context, _ string, vmid int) (map[string]string, error) {
+func (f *fakeClient) GuestConfig(_ context.Context, _ string, kind proxmox.Kind, vmid int) (map[string]string, error) {
+	if f.kinds == nil {
+		f.kinds = map[int]proxmox.Kind{}
+	}
+	f.kinds[vmid] = kind
 	return f.configs[vmid], nil
 }
 
-func (f *fakeClient) UpdateVMConfig(_ context.Context, _ string, vmid int, fields map[string]string) error {
+func (f *fakeClient) UpdateGuestConfig(
+	_ context.Context, _ string, _ proxmox.Kind, vmid int, fields map[string]string,
+) error {
 	if f.updates == nil {
 		f.updates = map[int]map[string]string{}
 	}
@@ -241,9 +250,9 @@ func TestCheckOnceVerarbeitetAufgabeNurEinmal(t *testing.T) {
 
 func TestSweepGehtAlleVorhandenenVMsDurch(t *testing.T) {
 	client := &fakeClient{
-		vms: []proxmox.VM{
-			{VMID: 200, Node: "vmh02", Name: "ohne-limits", Type: "qemu"},
-			{VMID: 201, Node: "vmh03", Name: "schon-begrenzt", Type: "qemu"},
+		guests: []proxmox.Guest{
+			{VMID: 200, Node: "vmh02", Name: "ohne-limits", Kind: proxmox.KindQemu},
+			{VMID: 201, Node: "vmh03", Name: "schon-begrenzt", Kind: proxmox.KindQemu},
 		},
 		configs: map[int]map[string]string{
 			200: {"scsi0": "local-pool:vm-200-disk-0,size=32G"},
@@ -266,7 +275,7 @@ func TestSweepGehtAlleVorhandenenVMsDurch(t *testing.T) {
 
 func TestSweepDryRunSchreibtNicht(t *testing.T) {
 	client := &fakeClient{
-		vms:     []proxmox.VM{{VMID: 202, Node: "vmh02", Type: "qemu"}},
+		guests:  []proxmox.Guest{{VMID: 202, Node: "vmh02", Kind: proxmox.KindQemu}},
 		configs: map[int]map[string]string{202: {"scsi0": "local-pool:vm-202-disk-0,size=32G"}},
 	}
 
@@ -292,9 +301,9 @@ func TestNurEigenerNode(t *testing.T) {
 			{UPID: "UPID:f", Node: "vmh02", Type: "qmrestore", ID: "300", Status: "OK", EndTime: 1000},
 			{UPID: "UPID:g", Node: "vmh03", Type: "qmrestore", ID: "301", Status: "OK", EndTime: 1000},
 		},
-		vms: []proxmox.VM{
-			{VMID: 300, Node: "vmh02", Type: "qemu"},
-			{VMID: 301, Node: "vmh03", Type: "qemu"},
+		guests: []proxmox.Guest{
+			{VMID: 300, Node: "vmh02", Kind: proxmox.KindQemu},
+			{VMID: 301, Node: "vmh03", Kind: proxmox.KindQemu},
 		},
 		configs: map[int]map[string]string{
 			300: {"scsi0": "local-pool:vm-300-disk-0,size=32G"},
@@ -332,11 +341,13 @@ type failingClient struct {
 	failFor map[int]bool
 }
 
-func (f *failingClient) UpdateVMConfig(ctx context.Context, node string, vmid int, fields map[string]string) error {
+func (f *failingClient) UpdateGuestConfig(
+	ctx context.Context, node string, kind proxmox.Kind, vmid int, fields map[string]string,
+) error {
 	if f.failFor[vmid] {
 		return errors.New("read-only file system")
 	}
-	return f.fakeClient.UpdateVMConfig(ctx, node, vmid, fields)
+	return f.fakeClient.UpdateGuestConfig(ctx, node, kind, vmid, fields)
 }
 
 // Eine fehlgeschlagene Aufgabe darf nicht als erledigt gelten: Sonst bliebe
@@ -431,9 +442,9 @@ nodes:
 	}
 
 	client := &fakeClient{
-		vms: []proxmox.VM{
-			{VMID: 100, Node: "vmh02", Type: "qemu"},
-			{VMID: 101, Node: "vmh03", Type: "qemu"},
+		guests: []proxmox.Guest{
+			{VMID: 100, Node: "vmh02", Kind: proxmox.KindQemu},
+			{VMID: 101, Node: "vmh03", Kind: proxmox.KindQemu},
 		},
 		configs: map[int]map[string]string{
 			100: {"scsi0": "local-pool:vm-100-disk-0,size=32G"},
@@ -451,5 +462,66 @@ nodes:
 	}
 	if _, written := client.updates[101]; written {
 		t.Errorf("vm 101 auf vmh03 = %v, dort ist die regel abgeschaltet", client.updates[101])
+	}
+}
+
+// Ein neu angelegter Container muss genauso erkannt werden wie eine VM —
+// Proxmox stellt dessen Aufgaben "vz" statt "qm" voran.
+func TestNeuerContainerWirdGestaffelt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := `
+mode: local
+only_own_node: false
+state_file: ` + filepath.Join(t.TempDir(), "state.json") + `
+defaults:
+  mbps_rd: 200
+rules:
+  io_limits: off
+  guest_agent: enforce
+  startup:
+    mode: enforce
+    vm:
+      up: 45s
+    lxc:
+      up: 10s
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("testkonfiguration schreiben: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	client := &fakeClient{
+		tasks: []proxmox.Task{
+			{UPID: "a", Node: "vmh02", Type: "vzcreate", ID: "200", Status: "OK", EndTime: 100},
+			{UPID: "b", Node: "vmh02", Type: "qmcreate", ID: "201", Status: "OK", EndTime: 101},
+		},
+		configs: map[int]map[string]string{
+			200: {"onboot": "1", "rootfs": "local-zfs:subvol-200-disk-0,size=8G"},
+			201: {"onboot": "1", "scsi0": "local-zfs:vm-201-disk-0,size=32G"},
+		},
+	}
+
+	w := newTestWatcher(t, cfg, client)
+	if err := w.checkOnce(context.Background()); err != nil {
+		t.Fatalf("checkOnce() = %v", err)
+	}
+
+	if got := client.kinds[200]; got != proxmox.KindLXC {
+		t.Errorf("gast 200 als %q angefasst, erwartet %q", got, proxmox.KindLXC)
+	}
+	if got := client.updates[200]["startup"]; got != "up=10" {
+		t.Errorf("container 200 startup = %q, erwartet up=10", got)
+	}
+	if _, written := client.updates[200]["agent"]; written {
+		t.Error("container 200 hat einen agent-eintrag bekommen — den kennt LXC nicht")
+	}
+	if got := client.updates[201]["startup"]; got != "up=45" {
+		t.Errorf("vm 201 startup = %q, erwartet up=45", got)
+	}
+	if got := client.updates[201]["agent"]; got != "1" {
+		t.Errorf("vm 201 agent = %q, erwartet 1", got)
 	}
 }

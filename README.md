@@ -8,8 +8,9 @@
 **Proxmox VE lässt bei jeder neuen VM Einstellungen offen. Dieser Dienst trägt sie nach.**
 
 IO-Begrenzungen je Speicherpool · Discard · SSD-Kennzeichen · IO-Thread ·
-Gast-Agent · gestaffelter Start — jede Prüfung eine eigene Regel, je Node
-einstellbar, und nichts davon überschreibt, was jemand bewusst gesetzt hat.
+Gast-Agent · gestaffelter Start für VMs **und Container** — jede Prüfung
+eine eigene Regel, je Node einstellbar, und nichts davon überschreibt, was
+jemand bewusst gesetzt hat.
 
 [Installation](#installation) · [Regeln](#regeln) · [Konfiguration](#konfiguration) · [Lizenz](#lizenz) · [English](#english)
 
@@ -37,13 +38,16 @@ einstellen lässt.
 
 1. Fragt regelmäßig `/cluster/tasks` ab.
 2. Filtert auf abgeschlossene Aufgaben vom Typ `qmcreate`, `qmrestore`
-   und `qmclone`.
-3. Liest die Konfiguration der betroffenen VM.
+   und `qmclone` — und bei Containern `vzcreate`, `vzrestore`, `vzclone`.
+3. Liest die Konfiguration des betroffenen Gastes.
 4. Lässt die eingeschalteten Regeln darüber laufen.
 5. Schreibt einmal, was dabei zusammengekommen ist.
 
 Übersprungen werden CD-ROM-Laufwerke sowie `efidisk`, `tpmstate` und
 `unused*` — dort akzeptiert Proxmox keine Plattenoptionen.
+
+Daneben kann er auf abgestürzte Dienste des Nodes aufpassen und sie wieder
+hochholen — siehe [Dienst-Monitor](#dienst-monitor).
 
 ## Betriebsarten
 
@@ -150,17 +154,21 @@ Ohne den Abschnitt ist `io_limits` scharf und alles Weitere aus — ein
 Update ändert also von sich aus nichts am Verhalten. `dry_run: true` senkt
 jede scharfe Regel auf `report` ab.
 
-| Regel | Was sie ergänzt | Optionen |
-|---|---|---|
-| `io_limits` | die IO-Begrenzungen aus dem Profil des Pools | — |
-| `discard` | `discard=on` | `pools` |
-| `ssd` | `ssd=1` | `pools` |
-| `iothread` | `iothread=1` | — |
-| `guest_agent` | `agent=1` | `fstrim_cloned_disks` |
-| `startup` | `up=<sekunden>` im Feld `startup` | `up` |
+| Regel | Was sie ergänzt | Gilt für | Optionen |
+|---|---|---|---|
+| `io_limits` | die IO-Begrenzungen aus dem Profil des Pools | VMs | — |
+| `discard` | `discard=on` | VMs | `pools` |
+| `ssd` | `ssd=1` | VMs | `pools` |
+| `iothread` | `iothread=1` | VMs | — |
+| `guest_agent` | `agent=1` | VMs | `fstrim_cloned_disks` |
+| `startup` | `up=<sekunden>` im Feld `startup` | VMs **und Container** | `up`, `vm`, `lxc` |
 
 Ein `pools`-Eintrag schränkt die Regel auf die genannten Speicherpools
 ein; ohne ihn gilt sie für alle.
+
+Bis auf die Staffelung betrifft alles nur VMs: Proxmox kennt für Container
+weder eine Drosselung je Mountpoint noch einen Gast-Agenten. Eine Regel,
+die für die Gastart nicht gilt, läuft dort erst gar nicht.
 
 Zu den einzelnen Regeln:
 
@@ -185,15 +193,91 @@ nach einem Stromausfall. Im Gast muss der Agent zusätzlich installiert
 sein; ist er nicht da, ändert das Kennzeichen nichts.
 
 **`startup`** staffelt den Start nach einem Neustart des Nodes: `up` ist der
-Abstand, den Proxmox nach dieser VM einhält, bevor die nächste startet.
-Ohne das fahren alle automatisch startenden VMs gleichzeitig hoch und
-erzeugen genau die Lastspitze, gegen die die IO-Begrenzung sonst arbeitet.
-Angefasst werden nur VMs mit `onboot: 1` — ob eine VM mitstarten soll,
+Abstand, den Proxmox nach diesem Gast einhält, bevor der nächste startet.
+Ohne das fährt alles, was automatisch mitstartet, gleichzeitig hoch und
+erzeugt genau die Lastspitze, gegen die die IO-Begrenzung sonst arbeitet.
+
+Als einzige Regel betrifft sie auch **Container** — ein Node fährt beide
+Gastarten gemeinsam hoch. Weil ein Container in Sekunden oben ist, eine VM
+aber erst ihr BIOS durchläuft, lässt sich der Abstand getrennt setzen:
+
+```yaml
+rules:
+  startup:
+    mode: enforce
+    up: 30s          # gilt für beide, solange darunter nichts steht
+    vm:
+      up: 45s        # nur VMs
+    lxc:
+      up: 10s        # nur Container
+```
+
+Ein Abstand von `0` heißt hier wie überall: nicht setzen. `lxc: {up: 0}`
+lässt Container also ganz in Ruhe.
+
+Angefasst wird nur, was `onboot: 1` trägt — ob ein Gast mitstarten soll,
 entscheidet der Betreiber, und eine fehlende Angabe ist hier keine
 vergessene Einstellung.
 
 Zwei Felder wirken erst beim nächsten Start der VM: `iothread` und der
 Gast-Agent. Der Dienst startet dafür **nichts** neu.
+
+### Dienst-Monitor
+
+Proxmox liefert seine eigenen Dienste ohne `Restart=` aus. Stirbt
+`pvestatd` an einem Signal, bleibt er liegen, bis jemand ihn von Hand
+startet — auf einem unserer Nodes waren das im September 2026 gut
+siebzehn Stunden ohne Statuswerte, ohne dass jemand etwas gemerkt hätte.
+
+Der Monitor holt so einen Dienst wieder hoch. Blind endlos neu starten
+hilft allerdings nicht: Ein Dienst, der immer wieder stirbt, hat eine
+Ursache, die ein Neustart nicht behebt. Deshalb zählt der Monitor mit,
+steigt nach einer einstellbaren Zahl von Versuchen aus und meldet sich
+dann bei einem Menschen.
+
+```yaml
+services:
+  mode: enforce
+  units:
+    - pvestatd.service
+  restart_limit: 3      # so viele Neustarts, dann ist Schluss
+  stable_after: 24h     # so lange durchgelaufen = wieder gesund
+  mail:
+    to: admin@example.com
+    from: pve-optimizer@example.com
+    server: mail.example.com:25
+```
+
+| Schlüssel | Vorgabe | Bedeutung |
+|---|---|---|
+| `mode` | `off` | `off`, `report` oder `enforce` — wie bei den Regeln |
+| `units` | `[pvestatd.service]` | die zu überwachenden systemd-Units |
+| `restart_limit` | `3` | Neustarts je Dienst, bevor der Monitor aufgibt |
+| `stable_after` | `24h` | Laufzeit am Stück, nach der der Zähler auf null fällt |
+| `mail` | — | wohin die Meldung geht; ohne den Abschnitt bleibt sie im Protokoll |
+
+Was der Monitor **nicht** anfasst: einen Dienst, den jemand angehalten hat.
+Der steht auf `inactive`, nicht auf `failed` — wer einen Dienst abschaltet,
+will ihn nicht von einem Wächter wieder hochgeholt bekommen.
+
+Im Modus `report` schreibt er den Absturz nur ins Protokoll; er startet
+dann nichts neu und verschickt auch keine Mail. `dry_run` senkt ihn wie
+jede Regel dorthin ab.
+
+Der Zählerstand liegt als `services.json` neben dem `state_file` und
+überdauert damit ein Update des Dienstes — sonst ließe sich die Grenze
+durch einen Neustart aushebeln.
+
+Der Monitor sieht immer nur die Maschine, auf der er läuft. Bei `mode: api`
+ist das nicht zwangsläufig der Node, dessen Gäste der Dienst betreut.
+
+**Zur Mail:** Der Weg geht bewusst über einen eigenen SMTP-Zugang und nicht
+über das `sendmail` des Nodes. Ein frisch aufgesetzter Proxmox-Node hat zwar
+ein postfix, aber keinen Relay und eine Platzhalteradresse als Empfänger —
+eine Mail über diesen Weg landet in der Warteschlange und nie bei einem
+Menschen. Verlangt der Server eine Anmeldung, gehört das Passwort nicht in
+die Konfiguration, sondern in die Umgebungsvariable
+`PVE_OPTIMIZER_SMTP_PASSWORD`.
 
 ### Abweichungen je Node
 
@@ -210,6 +294,8 @@ nodes:
     rules:
       discard: off        # hier hängt ein Speicher ohne Discard
       iothread: report    # neu im Cluster, erst einmal beobachten
+    services:
+      restart_limit: 5    # dieser Node hat eine Vorgeschichte
     pools:
       local-pool:         # gleicher Name, langsamere Platte
         mbps_wr: 80
@@ -219,7 +305,9 @@ nodes:
 
 Bei einer Regel wird nur überschrieben, was der Node tatsächlich nennt: Wer
 dort allein den Modus setzt, behält deren übrige Optionen aus dem
-allgemeinen Abschnitt.
+allgemeinen Abschnitt. Für den Dienst-Monitor gilt dasselbe — im Beispiel
+oben erbt `vmh03` Modus, Units und Frist aus `services:` und ändert nur die
+Zahl der Neustarts.
 
 Ein Profil wird von speziell nach allgemein gesucht:
 
@@ -299,6 +387,42 @@ Ein `apt upgrade` tauscht später das Binary und startet den Dienst neu,
 sofern er eingerichtet ist. Die eigene `config.yaml` bleibt unangetastet;
 die Vorlage daneben wird auf den neuen Stand gebracht.
 
+### Umstieg von einer Handinstallation
+
+Wer den Dienst bisher von Hand eingerichtet hat, hat ihn unter
+`/usr/local/bin/pve-optimizer` liegen und seine Unit unter
+`/etc/systemd/system/`. **Ein `apt install` allein reicht dort nicht** —
+im Gegenteil, es sieht danach nur so aus, als wäre der Dienst aktuell:
+
+Das Paket legt das Binary nach `/usr/bin` und die Unit nach
+`/lib/systemd/system`. Systemd bevorzugt aber, was unter `/etc` steht. Die
+alte Unit bleibt also maßgeblich und zeigt weiter auf `/usr/local/bin` —
+das Paket-Binary wird nie gestartet. Das Installationsskript startet den
+Dienst neu, weil er eingeschaltet ist, und bringt damit **die alte Version
+wieder hoch**. Ein `pve-optimizer -version` am eingeschalteten Dienst
+zeigt weiterhin den alten Stand.
+
+Der Umstieg braucht deshalb einmalig je Node:
+
+```bash
+systemctl stop pve-optimizer
+rm /etc/systemd/system/pve-optimizer.service
+rm /usr/local/bin/pve-optimizer
+apt install pve-optimizer
+systemctl daemon-reload
+systemctl enable --now pve-optimizer
+systemctl status pve-optimizer      # Version im Protokoll gegenprüfen
+```
+
+Die eigene `/etc/pve-optimizer/config.yaml` bleibt dabei liegen und gilt
+weiter. Zwei Dinge sind daran zu prüfen:
+
+- Steht dort noch ein Pool in der alten Schreibweise `<node>:<pool>`,
+  bricht der Dienst beim Start mit einem Hinweis ab — der Eintrag gehört
+  unter [`nodes:`](#abweichungen-je-node).
+- Ohne einen Abschnitt `rules:` bleibt es beim bisherigen Verhalten: Die
+  IO-Begrenzung ist scharf, alle neuen Regeln sind aus.
+
 ### Von Hand
 
 Ohne Repository — die Binaries hängen an jedem
@@ -331,18 +455,19 @@ make deb        # Debian-Pakete für amd64 und arm64
 
 Vor jedem Push `make check` — die Pipeline prüft dasselbe.
 
-## Bestehende VMs nachziehen
+## Bestehende Gäste nachziehen
 
 Die laufende Beobachtung greift nur bei neuen Aufgaben — an bereits
-vorhandenen VMs bliebe also alles, wie es ist. Für den Rollout gibt es
-deshalb einen einmaligen Durchlauf über alle VMs des Clusters:
+vorhandenen Gästen bliebe also alles, wie es ist. Für den Rollout gibt es
+deshalb einen einmaligen Durchlauf über alle VMs und Container des
+Clusters:
 
 ```bash
 pve-optimizer -config /etc/pve-optimizer/config.yaml -sweep
 ```
 
 Erst mit `dry_run: true` laufen lassen und das Protokoll prüfen, dann scharf.
-Der Durchlauf beendet sich nach getaner Arbeit; eine VM, die sich nicht
+Der Durchlauf beendet sich nach getaner Arbeit; ein Gast, der sich nicht
 anpassen lässt, bricht ihn nicht ab, sondern wird am Ende gemeldet.
 
 ## Sinnvolle Werte finden
@@ -368,14 +493,16 @@ Die Logik dahinter in Kurzform:
 
 ## Grenzen
 
-- **Nur VMs, keine Container.** Proxmox kennt für LXC keine Drosselung je
-  Mountpoint; dort ginge das nur über cgroup-Limits für den ganzen
-  Container.
+- **An Containern nur die Staffelung.** Proxmox kennt für LXC keine
+  Drosselung je Mountpoint und keinen Gast-Agenten; Drosselung ginge dort
+  nur über cgroup-Limits für den ganzen Container. Der gestaffelte Start
+  dagegen ist bei beiden Gastarten dasselbe Feld und wird deshalb auch bei
+  Containern ergänzt.
 - **Kein Neustart von Gästen.** Was erst beim nächsten Start der VM wirkt,
   wirkt erst dann.
 - **Im laufenden Betrieb nur neue Aufgaben.** Beim ersten Start merkt sich
   der Dienst den aktuellen Zeitpunkt und arbeitet die Historie nicht nach —
-  für bestehende VMs ist `-sweep` da.
+  für bestehende Gäste ist `-sweep` da.
 
 ## Lizenz
 
@@ -402,9 +529,9 @@ Fragen, Fehler, Wünsche: gerne als Issue.
 ## English
 
 A small service for Proxmox VE. It watches the cluster task list and, once
-a VM has been **created, cloned or restored from backup**, fills in what
-Proxmox leaves open: IO limits, discard, the SSD flag, the guest agent,
-staggered start-up delays.
+a guest — VM or container — has been **created, cloned or restored from
+backup**, fills in what Proxmox leaves open: IO limits, discard, the SSD
+flag, the guest agent, staggered start-up delays.
 
 Each check is a rule with a mode of its own — `off`, `report` (log only) or
 `enforce` (write). Rules, per-pool throttling profiles and their defaults
@@ -413,7 +540,10 @@ values are never overwritten**; the service only fills gaps. It runs either
 locally on each node via `pvesh` (`mode: local`) or once against the
 cluster API (`mode: api`).
 
-VMs only — Proxmox has no per-mountpoint throttling for LXC containers.
+Disk and agent settings apply to VMs only — Proxmox has no per-mountpoint
+throttling and no guest agent for LXC containers. The start-up stagger is
+the same field on both, so containers get it too, with a delay of their
+own.
 
 See [`config.example.yaml`](config.example.yaml) for all options.
 
