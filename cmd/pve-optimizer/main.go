@@ -12,7 +12,9 @@ import (
 	"syscall"
 
 	"pve-optimizer/internal/config"
+	"pve-optimizer/internal/mode"
 	"pve-optimizer/internal/proxmox"
+	"pve-optimizer/internal/services"
 	"pve-optimizer/internal/version"
 	"pve-optimizer/internal/watcher"
 )
@@ -59,7 +61,30 @@ func run(configPath string, debug, sweep bool) error {
 	if sweep {
 		return w.Sweep(ctx)
 	}
+	if err := startMonitor(ctx, cfg, log); err != nil {
+		return err
+	}
 	return w.Run(ctx)
+}
+
+// startMonitor stellt den Dienst-Monitor daneben, sofern er eingeschaltet
+// ist. Er läuft eigenständig: Ein abgestürztes pvestatd soll auch dann
+// wieder hochkommen, wenn gerade die Aufgabenliste klemmt.
+func startMonitor(ctx context.Context, cfg *config.Config, log *slog.Logger) error {
+	settings, err := cfg.ServicesFor(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+	if settings.Mode == mode.Off {
+		return nil
+	}
+
+	monitor, err := services.New(settings, cfg.MonitoredNode(), cfg.ServiceStateFile(), log)
+	if err != nil {
+		return err
+	}
+	go monitor.Run(ctx, cfg.PollInterval)
+	return nil
 }
 
 func newClient(cfg *config.Config) (proxmox.Client, error) {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"pve-optimizer/internal/mode"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -230,5 +232,131 @@ func TestBeispielkonfigurationLaedt(t *testing.T) {
 	}
 	if len(set) == 0 {
 		t.Error("kein regelsatz aus der vorlage")
+	}
+}
+
+func TestDienstMonitorVorgabeAus(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	settings, err := cfg.ServicesFor("vmh03")
+	if err != nil {
+		t.Fatalf("ServicesFor() = %v", err)
+	}
+	if settings.Mode != mode.Off {
+		t.Errorf("Mode = %q, erwartet %q — was eingreift, ist von Haus aus aus", settings.Mode, mode.Off)
+	}
+}
+
+func TestDienstMonitorJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+services:
+  mode: report
+  restart_limit: 2
+  units: [pvestatd.service]
+nodes:
+  vmh03:
+    services:
+      mode: enforce
+      restart_limit: 5
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	allgemein, err := cfg.ServicesFor("vmh01")
+	if err != nil {
+		t.Fatalf("ServicesFor(vmh01) = %v", err)
+	}
+	if allgemein.Mode != mode.Report || allgemein.RestartLimit != 2 {
+		t.Errorf("vmh01: Mode = %q, RestartLimit = %d, erwartet report/2", allgemein.Mode, allgemein.RestartLimit)
+	}
+
+	abweichend, err := cfg.ServicesFor("vmh03")
+	if err != nil {
+		t.Fatalf("ServicesFor(vmh03) = %v", err)
+	}
+	if abweichend.Mode != mode.Enforce || abweichend.RestartLimit != 5 {
+		t.Errorf("vmh03: Mode = %q, RestartLimit = %d, erwartet enforce/5", abweichend.Mode, abweichend.RestartLimit)
+	}
+	// Was der Node nicht nennt, bleibt so, wie es clusterweit steht.
+	if len(abweichend.Units) != 1 || abweichend.Units[0] != "pvestatd.service" {
+		t.Errorf("vmh03: Units = %v, erwartet die clusterweite Liste", abweichend.Units)
+	}
+}
+
+func TestDienstMonitorImProbelauf(t *testing.T) {
+	path := writeConfig(t, `
+dry_run: true
+defaults:
+  mbps_rd: 200
+services:
+  mode: enforce
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	settings, err := cfg.ServicesFor("vmh03")
+	if err != nil {
+		t.Fatalf("ServicesFor() = %v", err)
+	}
+	if settings.Mode != mode.Report {
+		t.Errorf("Mode = %q, erwartet %q — dry_run senkt auch den Monitor ab", settings.Mode, mode.Report)
+	}
+}
+
+func TestDienstMonitorTippfehlerWirdAbgewiesen(t *testing.T) {
+	tests := map[string]string{
+		"unbekannter schlüssel":         "services:\n  mode: enforce\n  restart_limt: 3\n",
+		"unbekannter schlüssel in mail": "services:\n  mode: enforce\n  mail:\n    empfaenger: a@b.de\n",
+		"unsinnige grenze":              "services:\n  mode: enforce\n  restart_limit: 0\n",
+		"frist zu kurz":                 "services:\n  mode: enforce\n  stable_after: 30s\n",
+	}
+
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, "defaults:\n  mbps_rd: 200\n"+block)
+			if _, err := Load(path); err == nil {
+				t.Fatal("Load() nahm die Konfiguration an")
+			}
+		})
+	}
+}
+
+func TestSmtpPasswortAusUmgebung(t *testing.T) {
+	t.Setenv(smtpPasswordEnv, "geheim")
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+services:
+  mode: enforce
+  mail:
+    to: admin@example.com
+    from: pve@example.com
+    server: mail.example.com:25
+    username: pve
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	settings, err := cfg.ServicesFor("vmh03")
+	if err != nil {
+		t.Fatalf("ServicesFor() = %v", err)
+	}
+	if settings.Mail.Password != "geheim" {
+		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Mail.Password)
 	}
 }

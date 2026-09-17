@@ -3,15 +3,21 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"pve-optimizer/internal/limits"
+	"pve-optimizer/internal/mode"
 	"pve-optimizer/internal/rules"
+	"pve-optimizer/internal/services"
 )
 
 // Mode bestimmt, wie der Dienst mit Proxmox spricht.
@@ -26,9 +32,12 @@ const (
 	ModeLocal Mode = "local"
 )
 
-// Umgebungsvariable für das Token-Secret. Secrets gehören nicht in eine
+// Umgebungsvariablen für die Geheimnisse. Die gehören nicht in eine
 // Konfigurationsdatei, die neben dem Binary liegt.
-const tokenSecretEnv = "PVE_OPTIMIZER_TOKEN_SECRET"
+const (
+	tokenSecretEnv  = "PVE_OPTIMIZER_TOKEN_SECRET"
+	smtpPasswordEnv = "PVE_OPTIMIZER_SMTP_PASSWORD"
+)
 
 type Config struct {
 	Mode         Mode          `yaml:"mode"`
@@ -44,6 +53,11 @@ type Config struct {
 	// Node überschreibt den eigenen Node-Namen. Leer bedeutet: der
 	// Hostname, unter dem der Node im Cluster geführt wird.
 	Node string `yaml:"node"`
+	// Host ist der Rechner, auf dem der Dienst tatsächlich läuft. Im
+	// local-Modus derselbe wie Node; im api-Modus kann der Dienst
+	// anderswo stehen. Der Dienst-Monitor braucht ihn, weil er nur die
+	// eigene Maschine sieht. Wird ermittelt, nicht eingestellt.
+	Host string `yaml:"-"`
 
 	API      API                       `yaml:"api"`
 	Defaults limits.Profile            `yaml:"defaults"`
@@ -52,6 +66,10 @@ type Config struct {
 	// Rules sind die Regeln, die clusterweit gelten. Ausgewertet werden
 	// sie im Paket rules — jede Regel kennt ihre eigenen Optionen.
 	Rules map[string]yaml.Node `yaml:"rules"`
+	// Services ist der Dienst-Monitor, der abgestürzte systemd-Dienste
+	// des Nodes wieder hochholt.
+	Services yaml.Node `yaml:"services"`
+
 	// Nodes weicht davon ab, je Node. Genannt wird nur, was anders ist.
 	Nodes map[string]NodeSettings `yaml:"nodes"`
 }
@@ -62,6 +80,7 @@ type NodeSettings struct {
 	Rules    map[string]yaml.Node      `yaml:"rules"`
 	Defaults limits.Profile            `yaml:"defaults"`
 	Pools    map[string]limits.Profile `yaml:"pools"`
+	Services yaml.Node                 `yaml:"services"`
 }
 
 type API struct {
@@ -119,11 +138,12 @@ func applyDefaults(cfg *Config) error {
 		cfg.OnlyOwnNode = &restrict
 	}
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("eigenen node-namen ermitteln: %w", err)
+	}
+	cfg.Host = hostname
 	if *cfg.OnlyOwnNode && cfg.Node == "" {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return fmt.Errorf("eigenen node-namen ermitteln: %w", err)
-		}
 		cfg.Node = hostname
 	}
 	return nil
@@ -154,6 +174,9 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.validateRules(); err != nil {
+		return err
+	}
+	if err := c.validateServices(); err != nil {
 		return err
 	}
 	if c.Mode == ModeAPI {
@@ -189,6 +212,20 @@ func (c *Config) validateRules() error {
 	}
 	for node := range c.Nodes {
 		if _, err := c.RulesFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateServices baut den Monitor einmal für jeden genannten Node
+// durch — aus demselben Grund wie validateRules.
+func (c *Config) validateServices() error {
+	if _, err := c.ServicesFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.ServicesFor(node); err != nil {
 			return fmt.Errorf("nodes.%s: %w", node, err)
 		}
 	}
@@ -276,4 +313,65 @@ func (c *Config) RulesFor(node string) (rules.Set, error) {
 // beschränkt.
 func (c *Config) RestrictedToOwnNode() bool {
 	return c.OnlyOwnNode != nil && *c.OnlyOwnNode
+}
+
+// ServicesFor baut den Dienst-Monitor für einen Node: die clusterweiten
+// Einstellungen, darüber die Abweichung dieses Nodes. Überschrieben wird
+// nur, was der Node tatsächlich nennt.
+//
+// Ein Probelauf wirkt hier genauso wie bei den Regeln: dry_run senkt den
+// Monitor auf "report" ab, er meldet den Absturz dann nur ins Protokoll
+// und startet nichts neu.
+func (c *Config) ServicesFor(node string) (services.Settings, error) {
+	settings := services.DefaultSettings()
+	for _, layer := range []yaml.Node{c.Services, c.Nodes[node].Services} {
+		if layer.IsZero() {
+			continue
+		}
+		if err := decodeStrict(layer, &settings); err != nil {
+			return services.Settings{}, fmt.Errorf("services: %w", err)
+		}
+	}
+
+	settings.Mail.Password = os.Getenv(smtpPasswordEnv)
+	if c.DryRun && settings.Mode == mode.Enforce {
+		settings.Mode = mode.Report
+	}
+	if err := settings.Check(); err != nil {
+		return services.Settings{}, fmt.Errorf("services: %w", err)
+	}
+	return settings, nil
+}
+
+// MonitoredNode ist der Name, unter dem der Dienst-Monitor arbeitet.
+// Üblicherweise der eigene Node; bleibt der im api-Modus offen, der
+// Rechner selbst — der Monitor sieht ohnehin nur die eigene Maschine.
+func (c *Config) MonitoredNode() string {
+	if c.Node != "" {
+		return c.Node
+	}
+	return c.Host
+}
+
+// ServiceStateFile liegt neben dem Stand der Aufgabenliste. Ein eigener
+// Schlüssel dafür wäre ein Knopf, an dem niemand je drehen will.
+func (c *Config) ServiceStateFile() string {
+	return filepath.Join(filepath.Dir(c.StateFile), "services.json")
+}
+
+// decodeStrict liest einen Abschnitt und weist unbekannte Schlüssel ab,
+// auch in Unterabschnitten. Der kurze Weg über yaml.Node.Decode kennt
+// kein KnownFields — ein Tippfehler wie "restart_limt" bliebe damit
+// unbemerkt und die eingestellte Grenze stillschweigend die Vorgabe.
+func decodeStrict(node yaml.Node, target any) error {
+	raw, err := yaml.Marshal(&node)
+	if err != nil {
+		return fmt.Errorf("abschnitt lesen: %w", err)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(target); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
 }
