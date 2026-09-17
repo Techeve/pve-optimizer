@@ -318,10 +318,10 @@ func TestStartupUebergehtAusgenommeneGastart(t *testing.T) {
 	}
 }
 
-// Alles außer der Staffelung gibt es nur bei VMs. Ein "agent" in einer
-// Container-Konfiguration würde Proxmox zurückweisen — und damit die
-// ganze Änderung scheitern lassen.
-func TestNurStartupFasstContainerAn(t *testing.T) {
+// Staffelung und Netzbegrenzung gibt es bei beiden Gastarten, alles
+// Übrige nur bei VMs. Ein "agent" in einer Container-Konfiguration würde
+// Proxmox zurückweisen — und damit die ganze Änderung scheitern lassen.
+func TestVMRegelnFassenContainerNichtAn(t *testing.T) {
 	general := "" +
 		"io_limits: enforce\ndiscard: enforce\nssd: enforce\niothread: enforce\n" +
 		"guest_agent: enforce\nstartup:\n  mode: enforce\n  up: 10s\n"
@@ -341,4 +341,103 @@ func TestNurStartupFasstContainerAn(t *testing.T) {
 			t.Errorf("regel %q hat sich an einem container zu schaffen gemacht: %+v", note.Rule, note)
 		}
 	}
+}
+
+func TestNetRateErgaenztAlleKarten(t *testing.T) {
+	plan := apply(t, "io_limits: off\nnet_rate:\n  mode: enforce\n  rate: 125\n", map[string]string{
+		"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+		"net1": "virtio=AA:BB:CC:DD:EE:02,bridge=vmbr1",
+	})
+
+	fields := plan.Fields()
+	for _, key := range []string{"net0", "net1"} {
+		if got := fields[key]; !strings.Contains(got, "rate=125") {
+			t.Errorf("%s = %q, erwartet die ergänzte Begrenzung", key, got)
+		}
+	}
+}
+
+func TestNetRateLaesstGesetzteBegrenzungInRuhe(t *testing.T) {
+	plan := apply(t, "io_limits: off\nnet_rate:\n  mode: enforce\n  rate: 125\n", map[string]string{
+		"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,rate=10",
+	})
+
+	if got, written := plan.Fields()["net0"]; written {
+		t.Errorf("net0 = %q, eine gesetzte Begrenzung bleibt unangetastet", got)
+	}
+}
+
+func TestNetRateJeGastart(t *testing.T) {
+	general := "io_limits: off\nnet_rate:\n  mode: enforce\n  vm:\n    rate: 125\n  lxc:\n    rate: 12.5\n"
+
+	tests := []struct {
+		kind   proxmox.Kind
+		config map[string]string
+		want   string
+	}{
+		{proxmox.KindQemu, map[string]string{"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0"}, "rate=125"},
+		{proxmox.KindLXC, map[string]string{"net0": "name=eth0,bridge=vmbr0,hwaddr=AA:BB:CC:DD:EE:02"}, "rate=12.5"},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			plan := applyTo(t, tc.kind, general, tc.config)
+
+			if got := plan.Fields()["net0"]; !strings.Contains(got, tc.want) {
+				t.Errorf("net0 = %q, erwartet %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNetRateUebergehtAusgenommeneGastart(t *testing.T) {
+	general := "io_limits: off\nnet_rate:\n  mode: enforce\n  rate: 125\n  lxc:\n    rate: 0\n"
+	plan := applyTo(t, proxmox.KindLXC, general, map[string]string{
+		"net0": "name=eth0,bridge=vmbr0",
+	})
+
+	if got, written := plan.Fields()["net0"]; written {
+		t.Errorf("net0 = %q, erwartet keine Änderung", got)
+	}
+}
+
+func TestNetRateOhneNetzwerkkarte(t *testing.T) {
+	plan := apply(t, "io_limits: off\nnet_rate:\n  mode: enforce\n  rate: 125\n", map[string]string{
+		"onboot": "1",
+	})
+
+	if len(plan.Fields()) != 0 {
+		t.Errorf("Fields() = %v, erwartet keine Änderung", plan.Fields())
+	}
+	if !hasNote(plan, "net_rate", StatusSkipped) {
+		t.Error("das Übergehen steht nicht im Protokoll")
+	}
+}
+
+// "net" allein oder "network" sind keine Netzwerkkarten und dürfen nicht
+// als solche durchgehen.
+func TestNetRateErkenntNurEchteKarten(t *testing.T) {
+	plan := apply(t, "io_limits: off\nnet_rate:\n  mode: enforce\n  rate: 125\n", map[string]string{
+		"net0":  "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+		"netz":  "irgendwas",
+		"net":   "irgendwas",
+		"net0x": "irgendwas",
+	})
+
+	fields := plan.Fields()
+	if len(fields) != 1 {
+		t.Fatalf("Fields() = %v, erwartet nur net0", fields)
+	}
+	if !strings.Contains(fields["net0"], "rate=125") {
+		t.Errorf("net0 = %q, erwartet die ergänzte Begrenzung", fields["net0"])
+	}
+}
+
+func hasNote(plan *Plan, rule string, status Status) bool {
+	for _, note := range plan.Notes() {
+		if note.Rule == rule && note.Status == status {
+			return true
+		}
+	}
+	return false
 }

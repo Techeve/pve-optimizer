@@ -167,6 +167,35 @@ rules:
     lxc:
       up: 10s
 
+  # Begrenzen, wie viel über die Netzwerkkarten eines Gastes laufen darf.
+  # Ohne das zieht ein einzelner Gast die Leitung des Nodes leer — ein
+  # Backup, ein Klon oder ein durchgedrehter Dienst genügt, und alle
+  # anderen Gäste auf derselben Brücke hängen mit.
+  #
+  # Die Einheit ist Megabyte je Sekunde, so wie Proxmox sie führt — nicht
+  # Megabit. Eine Gigabit-Leitung sind also 125, 100 Mbit/s sind 12.5.
+  #
+  # Proxmox kennt "rate" bei VMs und Containern gleichermaßen, deshalb
+  # gilt die Regel für beide und lässt sich wie die Staffelung je Gastart
+  # trennen:
+  #
+  #   rate        gilt für beide, solange darunter nichts Genaueres steht
+  #   vm.rate     nur für VMs
+  #   lxc.rate    nur für Container
+  #
+  # Eine Rate von 0 heißt hier wie überall: nicht setzen.
+  #
+  # Ergänzt wird an jeder Karte, die noch keine Begrenzung trägt. Nach
+  # Brücke unterscheiden kann die Regel nicht — hängt ein Gast am 1G-LAN
+  # und am 10G-Speichernetz, bekommen beide Karten denselben Wert. Wer das
+  # trennen muss, setzt die zweite von Hand; gesetzte Werte bleiben.
+  net_rate:
+    mode: report
+    vm:
+      rate: 125
+    lxc:
+      rate: 12.5
+
 # ---------------------------------------------------------------------------
 # Dienst-Monitor
 # ---------------------------------------------------------------------------
@@ -258,6 +287,9 @@ rules:
 #       startup:
 #         lxc:
 #           up: 5s
+#       # Hier hängt nur eine Gigabit-Leitung am Node.
+#       net_rate:
+#         rate: 60
 #     # Dieser Node hat eine Vorgeschichte mit abstürzenden Diensten —
 #     # hier darf der Monitor schärfer sein als im Rest des Clusters.
 #     services:

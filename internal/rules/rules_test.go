@@ -245,3 +245,46 @@ func startupRule(t *testing.T, set Set) *startup {
 	t.Fatal("startup-regel fehlt im satz")
 	return nil
 }
+
+func TestNetRateWeistUnsinnigeWerteAb(t *testing.T) {
+	tests := map[string]string{
+		"gar keine begrenzung": "net_rate: enforce\n",
+		"beide gastarten aus":  "net_rate:\n  mode: enforce\n  vm:\n    rate: 0\n  lxc:\n    rate: 0\n",
+		"negativ":              "net_rate:\n  mode: enforce\n  rate: -5\n",
+		"eine gastart negativ": "net_rate:\n  mode: enforce\n  rate: 125\n  lxc:\n    rate: -1\n",
+		"unbekannte option":    "net_rate:\n  mode: enforce\n  raate: 125\n",
+	}
+
+	for name, general := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Build(settings(t, general), nil); err == nil {
+				t.Error("Build() = nil, erwartet einen Fehler")
+			}
+		})
+	}
+}
+
+// Ein Node darf auch hier an der verschachtelten Angabe abweichen, ohne
+// den Rest der Regel zu wiederholen.
+func TestNetRateNodeWeichtJeGastartAb(t *testing.T) {
+	set := build(t,
+		"net_rate:\n  mode: enforce\n  vm:\n    rate: 125\n  lxc:\n    rate: 12.5\n",
+		"net_rate:\n  lxc:\n    rate: 50\n")
+
+	var rule *netRate
+	for _, candidate := range set {
+		if known, ok := candidate.(*netRate); ok {
+			rule = known
+		}
+	}
+	if rule == nil {
+		t.Fatal("net_rate-regel fehlt im satz")
+	}
+
+	if got := rule.rateFor(proxmox.KindLXC); got != 50 {
+		t.Errorf("lxc = %v, erwartet 50 vom node", got)
+	}
+	if got := rule.rateFor(proxmox.KindQemu); got != 125 {
+		t.Errorf("vm = %v, erwartet 125 aus der allgemeinen einstellung", got)
+	}
+}
