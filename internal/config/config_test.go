@@ -339,25 +339,95 @@ func TestSmtpPasswortAusUmgebung(t *testing.T) {
 	path := writeConfig(t, `
 defaults:
   mbps_rd: 200
-services:
-  mode: enforce
-  mail:
-    to: admin@example.com
-    from: pve@example.com
-    server: mail.example.com:25
-    username: pve
+mail:
+  to: admin@example.com
+  from: pve@example.com
+  server: mail.example.com:25
+  username: pve
 `)
 
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	settings, err := cfg.ServicesFor("vmh03")
+	settings, err := cfg.MailFor("vmh03")
 	if err != nil {
-		t.Fatalf("ServicesFor() = %v", err)
+		t.Fatalf("MailFor() = %v", err)
 	}
-	if settings.Mail.Password != "geheim" {
-		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Mail.Password)
+	if settings.Password != "geheim" {
+		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Password)
+	}
+	if settings.To != "admin@example.com" {
+		t.Errorf("To = %q, erwartet die Adresse aus der Konfiguration", settings.To)
+	}
+}
+
+// Bis v0.5.x stand der Mailzugang unter services.mail. Ihn stillschweigend
+// zu überlesen hieße: Der Dienst läuft, und die Warnung, für die er da
+// ist, kommt nie an.
+func TestAlterMailplatzWirdAbgewiesen(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+services:
+  mode: enforce
+  mail:
+    to: admin@example.com
+    server: mail.example.com:25
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() nahm die alte Schreibweise an")
+	}
+	if !strings.Contains(err.Error(), "oberster ebene") {
+		t.Errorf("Fehler = %v, erwartet den Hinweis auf den neuen Platz", err)
+	}
+}
+
+func TestMailJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+nodes:
+  vmh03:
+    mail:
+      to: node-admin@example.com
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	allgemein, err := cfg.MailFor("vmh01")
+	if err != nil {
+		t.Fatalf("MailFor(vmh01) = %v", err)
+	}
+	if allgemein.To != "admin@example.com" {
+		t.Errorf("vmh01 To = %q", allgemein.To)
+	}
+
+	abweichend, err := cfg.MailFor("vmh03")
+	if err != nil {
+		t.Fatalf("MailFor(vmh03) = %v", err)
+	}
+	if abweichend.To != "node-admin@example.com" {
+		t.Errorf("vmh03 To = %q, erwartet die Adresse des Nodes", abweichend.To)
+	}
+	// Was der Node nicht nennt, bleibt so, wie es clusterweit steht.
+	if abweichend.Server != "mail.example.com:25" {
+		t.Errorf("vmh03 Server = %q, erwartet den clusterweiten Server", abweichend.Server)
+	}
+}
+
+func TestHalbEingerichteteMailWirdAbgewiesen(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\nmail:\n  to: a@b.de\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() nahm einen Zugang ohne Server an")
 	}
 }
 

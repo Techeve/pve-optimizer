@@ -117,7 +117,11 @@ func startMonitor(ctx context.Context, cfg *config.Config, log *slog.Logger) err
 		return nil
 	}
 
-	monitor, err := services.New(settings, cfg.MonitoredNode(), cfg.ServiceStateFile(), log)
+	sender, err := cfg.Sender(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+	monitor, err := services.New(settings, cfg.MonitoredNode(), cfg.ServiceStateFile(), sender, log)
 	if err != nil {
 		return err
 	}

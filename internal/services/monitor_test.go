@@ -271,3 +271,39 @@ func TestZeitspanneKurz(t *testing.T) {
 		}
 	}
 }
+
+func TestEinstellungenPruefen(t *testing.T) {
+	scharf := func(anpassen func(*Settings)) Settings {
+		settings := DefaultSettings()
+		settings.Mode = mode.Enforce
+		anpassen(&settings)
+		return settings
+	}
+
+	tests := map[string]struct {
+		settings Settings
+		want     string
+	}{
+		"vorgabe ist aus":   {DefaultSettings(), ""},
+		"scharf und gültig": {scharf(func(*Settings) {}), ""},
+		"ohne unit":         {scharf(func(s *Settings) { s.Units = nil }), "units"},
+		"leere unit":        {scharf(func(s *Settings) { s.Units = []string{""} }), "leeren eintrag"},
+		"grenze null":       {scharf(func(s *Settings) { s.RestartLimit = 0 }), "restart_limit"},
+		"frist zu kurz":     {scharf(func(s *Settings) { s.StableAfter = time.Minute }), "stable_after"},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := test.settings.Check()
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("unerwarteter fehler: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("fehler = %v, erwartet ein hinweis auf %q", err, test.want)
+			}
+		})
+	}
+}
