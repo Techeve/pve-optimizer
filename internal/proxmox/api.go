@@ -136,3 +136,11 @@ func (c *APIClient) ReplicationJobs(ctx context.Context) ([]ReplicationJob, erro
 	}
 	return jobs, nil
 }
+
+func (c *APIClient) Storages(ctx context.Context) ([]Storage, error) {
+	var storages []Storage
+	if err := c.request(ctx, http.MethodGet, "/storage", nil, &storages); err != nil {
+		return nil, fmt.Errorf("speicher abrufen: %w", err)
+	}
+	return storages, nil
+}

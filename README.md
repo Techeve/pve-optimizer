@@ -78,7 +78,42 @@ ganzen Cluster.
 
 ## Konfiguration
 
-Vorlage: [`config.example.yaml`](config.example.yaml).
+Der kürzeste Weg zu einer laufenden Einrichtung ist der Wizard:
+
+```bash
+pve-optimizer -wizard
+```
+
+Er sieht sich erst den Cluster an und schlägt vor, was dort tatsächlich
+steht — die vorhandenen Speicher, die Gäste, die kein Sicherungsauftrag
+erfasst. Jede Frage hat eine Vorgabe, die **Enter** übernimmt:
+
+```
+Gefunden auf pve01:
+  Speicher mit Gastplatten: local-pool, local-zfs
+  Gäste im Cluster:         29
+  davon ohne Sicherung:     4
+
+── Drosselung der Platten ──
+Dauerrate lesen (MB/s) [200]:
+```
+
+Am Ende zeigt er die erzeugte Datei, **lädt sie einmal probeweise** und
+schreibt erst dann — eine Konfiguration, die der Dienst nicht versteht,
+wäre ein schlechteres Ergebnis als gar keine. Eine vorhandene Datei wird
+vorher nach `config.yaml.vor-wizard` gesichert.
+
+Zum Schluss läuft `-check` und zeigt, was auf dem Cluster auffällt. Die
+Gäste ohne Sicherung listet er dabei schon während der Einrichtung auf und
+fragt, welche davon bewusst keine brauchen — die landen dann in der
+Ignore-Liste und tauchen im Bericht nicht mehr auf.
+
+Der Wizard spricht über `pvesh` mit Proxmox und gehört damit **auf einen
+Node**. Für die zentrale Installation über die Cluster-API ist die Vorlage
+der Weg.
+
+Vorlage zum Nachbessern oder für den Anfang von Hand:
+[`config.example.yaml`](config.example.yaml).
 
 ```yaml
 mode: local
