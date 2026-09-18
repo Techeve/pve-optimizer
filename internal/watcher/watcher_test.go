@@ -27,6 +27,16 @@ type fakeClient struct {
 	kinds map[int]proxmox.Kind
 }
 
+// Die lesenden Zugänge braucht nur das Paket advice; der Watcher fasst sie
+// nicht an. Sie sind hier, damit fakeClient die Schnittstelle erfüllt.
+func (f *fakeClient) NotBackedUp(context.Context) ([]proxmox.Guest, error) { return nil, nil }
+func (f *fakeClient) Options(context.Context) (proxmox.Options, error) {
+	return proxmox.Options{}, nil
+}
+func (f *fakeClient) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
+	return nil, nil
+}
+
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
 }

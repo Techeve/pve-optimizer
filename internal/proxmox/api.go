@@ -110,3 +110,29 @@ func (c *APIClient) request(ctx context.Context, method, path string, body io.Re
 	}
 	return nil
 }
+
+func (c *APIClient) NotBackedUp(ctx context.Context) ([]Guest, error) {
+	// Proxmox beantwortet die Frage selbst — mitsamt der Feinheiten von
+	// "all", "pool" und "exclude" in den Sicherungsaufträgen.
+	var guests []Guest
+	if err := c.request(ctx, http.MethodGet, "/cluster/backup-info/not-backed-up", nil, &guests); err != nil {
+		return nil, fmt.Errorf("ungesicherte gäste abrufen: %w", err)
+	}
+	return guests, nil
+}
+
+func (c *APIClient) Options(ctx context.Context) (Options, error) {
+	var options Options
+	if err := c.request(ctx, http.MethodGet, "/cluster/options", nil, &options); err != nil {
+		return Options{}, fmt.Errorf("rechenzentrums-einstellungen abrufen: %w", err)
+	}
+	return options, nil
+}
+
+func (c *APIClient) ReplicationJobs(ctx context.Context) ([]ReplicationJob, error) {
+	var jobs []ReplicationJob
+	if err := c.request(ctx, http.MethodGet, "/cluster/replication", nil, &jobs); err != nil {
+		return nil, fmt.Errorf("replikationsaufträge abrufen: %w", err)
+	}
+	return jobs, nil
+}

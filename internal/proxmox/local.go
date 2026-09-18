@@ -86,3 +86,42 @@ func (c *LocalClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	return stdout.Bytes(), nil
 }
+
+func (c *LocalClient) NotBackedUp(ctx context.Context) ([]Guest, error) {
+	// Proxmox beantwortet die Frage selbst — mitsamt der Feinheiten von
+	// "all", "pool" und "exclude" in den Sicherungsaufträgen. Das
+	// nachzubauen hieße, die Logik bei jeder Proxmox-Fassung nachzuziehen.
+	output, err := c.run(ctx, "get", "/cluster/backup-info/not-backed-up")
+	if err != nil {
+		return nil, fmt.Errorf("ungesicherte gäste abrufen: %w", err)
+	}
+	var guests []Guest
+	if err := json.Unmarshal(output, &guests); err != nil {
+		return nil, fmt.Errorf("ungesicherte gäste auswerten: %w", err)
+	}
+	return guests, nil
+}
+
+func (c *LocalClient) Options(ctx context.Context) (Options, error) {
+	output, err := c.run(ctx, "get", "/cluster/options")
+	if err != nil {
+		return Options{}, fmt.Errorf("rechenzentrums-einstellungen abrufen: %w", err)
+	}
+	var options Options
+	if err := json.Unmarshal(output, &options); err != nil {
+		return Options{}, fmt.Errorf("rechenzentrums-einstellungen auswerten: %w", err)
+	}
+	return options, nil
+}
+
+func (c *LocalClient) ReplicationJobs(ctx context.Context) ([]ReplicationJob, error) {
+	output, err := c.run(ctx, "get", "/cluster/replication")
+	if err != nil {
+		return nil, fmt.Errorf("replikationsaufträge abrufen: %w", err)
+	}
+	var jobs []ReplicationJob
+	if err := json.Unmarshal(output, &jobs); err != nil {
+		return nil, fmt.Errorf("replikationsaufträge auswerten: %w", err)
+	}
+	return jobs, nil
+}

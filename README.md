@@ -47,7 +47,9 @@ einstellen lässt.
 `unused*` — dort akzeptiert Proxmox keine Plattenoptionen.
 
 Daneben kann er auf abgestürzte Dienste des Nodes aufpassen und sie wieder
-hochholen — siehe [Dienst-Monitor](#dienst-monitor).
+hochholen — siehe [Dienst-Monitor](#dienst-monitor) — und auf ungünstige
+Einstellungen hinweisen, ohne sie anzufassen — siehe
+[Empfehlungen](#empfehlungen) und [Regelmäßiger Bericht](#regelmäßiger-bericht).
 
 ## Betriebsarten
 
@@ -280,10 +282,6 @@ services:
     - pvestatd.service
   restart_limit: 3      # so viele Neustarts, dann ist Schluss
   stable_after: 24h     # so lange durchgelaufen = wieder gesund
-  mail:
-    to: admin@example.com
-    from: pve-optimizer@example.com
-    server: mail.example.com:25
 ```
 
 | Schlüssel | Vorgabe | Bedeutung |
@@ -292,7 +290,9 @@ services:
 | `units` | `[pvestatd.service]` | die zu überwachenden systemd-Units |
 | `restart_limit` | `3` | Neustarts je Dienst, bevor der Monitor aufgibt |
 | `stable_after` | `24h` | Laufzeit am Stück, nach der der Zähler auf null fällt |
-| `mail` | — | wohin die Meldung geht; ohne den Abschnitt bleibt sie im Protokoll |
+
+Wohin die Meldung geht, steht unter [`mail:`](#mailzugang) — der Zugang
+gilt für den ganzen Dienst.
 
 Was der Monitor **nicht** anfasst: einen Dienst, den jemand angehalten hat.
 Der steht auf `inactive`, nicht auf `failed` — wer einen Dienst abschaltet,
@@ -309,13 +309,158 @@ durch einen Neustart aushebeln.
 Der Monitor sieht immer nur die Maschine, auf der er läuft. Bei `mode: api`
 ist das nicht zwangsläufig der Node, dessen Gäste der Dienst betreut.
 
-**Zur Mail:** Der Weg geht bewusst über einen eigenen SMTP-Zugang und nicht
-über das `sendmail` des Nodes. Ein frisch aufgesetzter Proxmox-Node hat zwar
-ein postfix, aber keinen Relay und eine Platzhalteradresse als Empfänger —
-eine Mail über diesen Weg landet in der Warteschlange und nie bei einem
-Menschen. Verlangt der Server eine Anmeldung, gehört das Passwort nicht in
-die Konfiguration, sondern in die Umgebungsvariable
-`PVE_OPTIMIZER_SMTP_PASSWORD`.
+### Mailzugang
+
+Ein Zugang für den ganzen Dienst — der Dienst-Monitor benutzt ihn, und
+alles Weitere, was sich melden muss, ebenfalls:
+
+```yaml
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+  # from: pve-optimizer@vmh03      # Vorgabe: aus dem Rechnernamen
+  # username: pve                  # nur, wenn der Server eine Anmeldung verlangt
+```
+
+`from` darf fehlen — dann bildet der Dienst die Adresse aus dem
+Rechnernamen, und im Posteingang steht, von welchem Node die Meldung kam.
+Verlangt der Server eine Anmeldung, gehört das Passwort **nicht** hierher,
+sondern in die Umgebungsvariable `PVE_OPTIMIZER_SMTP_PASSWORD` (siehe
+systemd-Unit).
+
+Ohne diesen Abschnitt bleibt jede Meldung im Protokoll. Das ist eine
+gültige Wahl: Der Dienst-Monitor startet abgestürzte Dienste auch dann
+wieder.
+
+**Warum ein eigener SMTP-Zugang und nicht das `sendmail` des Nodes?** Ein
+frisch aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
+und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg landet
+in der Warteschlange und nie bei einem Menschen — und eine Warnung, die
+niemand bekommt, ist schlimmer als keine.
+
+> **Umstieg von v0.5.x:** Der Zugang stand vorher unter `services.mail`.
+> Wer ihn dort stehen lässt, bekommt beim Start einen Fehler mit dem
+> Hinweis auf den neuen Platz — stillschweigend überlesen wird er nicht,
+> sonst liefe der Dienst und die Warnung käme nie an.
+
+
+### Empfehlungen
+
+Manches gehört in Menschenhand. Welche VM in welchen Sicherungsauftrag
+gehört, mit welchem Zeitplan und welcher Aufbewahrung, weiß der Dienst
+nicht — und er soll es auch nicht raten.
+
+Für solche Fälle gibt es **Empfehlungen**: Prüfungen, die nachsehen und
+sagen, was auffällt, warum es zählt und was zu tun ist. Sie ändern
+**nichts**. Diese Grenze steckt in der Bauweise, nicht in einem guten
+Vorsatz: Eine Prüfung bekommt einen Zugang zu Proxmox, der keine einzige
+schreibende Methode hat.
+
+```bash
+pve-optimizer -config /etc/pve-optimizer/config.yaml -check
+```
+
+```
+2 Befund(e):
+
+backup_coverage
+  - VM 3000 (Test-VM) auf pve02
+  - Container 101 (Wegwerf-CT) auf pve03
+
+  Warum:   Kein Sicherungsauftrag erfasst diesen Gast. Geht der Speicher verloren, ist er weg.
+  Was tun: Unter Rechenzentrum → Backup einem Auftrag hinzufügen. Braucht der Gast
+           bewusst keine Sicherung, gehört seine VMID unter advice.backup_coverage.ignore.
+```
+
+Befunde mit derselben Begründung werden zusammengefasst — vier ungesicherte
+Gäste tragen die Erklärung einmal, nicht viermal.
+
+| Prüfung | Was sie nachsieht | Optionen |
+|---|---|---|
+| `backup_coverage` | Gäste, die kein Sicherungsauftrag erfasst | `ignore` |
+| `bandwidth_limits` | fehlende Bandbreitengrenzen des Rechenzentrums | — |
+| `replication_rate` | Replikationsaufträge ohne Ratenbegrenzung | — |
+
+```yaml
+advice:
+  backup_coverage:
+    mode: report
+    ignore: [101, 3000]    # brauchen bewusst keine Sicherung
+  bandwidth_limits: report
+  replication_rate: off
+```
+
+Anders als die Regeln sind Empfehlungen **von Haus aus an**. Sie ändern
+nichts, und was man nicht sieht, kann man nicht abstellen. Erlaubt sind
+nur `off` und `report` — wer `enforce` einträgt, bekommt beim Start einen
+Fehler statt einer stillen Erwartung, die der Dienst nie erfüllt.
+`dry_run` wirkt hier nicht: Es gäbe nichts abzuschwächen.
+
+**Zu `backup_coverage`:** Die Frage, welche Gäste ein Auftrag erfasst,
+beantwortet **Proxmox selbst** (`/cluster/backup-info/not-backed-up`).
+Nachgebaut ist hier nichts — die Feinheiten von `all`, `pool` und
+`exclude` müssten sonst bei jeder Proxmox-Fassung nachgezogen werden.
+
+Der häufigste Weg in die Lücke ist harmlos und deshalb tückisch: Ein
+Auftrag mit fester VMID-Liste erfasst neue Gäste nicht. Wer eine VM anlegt
+und den Auftrag nicht anfasst, hat sie schlicht nicht gesichert.
+
+Gäste, die bewusst keine Sicherung brauchen, gehören unter `ignore`. Die
+Prüfung meldet dabei auch **verwaiste Einträge** — Nummern auf der Liste,
+zu denen es keinen Gast mehr gibt. Proxmox vergibt gelöschte VMIDs wieder,
+und ein alter Eintrag würde sonst irgendwann stillschweigend einen neuen
+Gast von der Prüfung ausnehmen.
+
+**Zu `bandwidth_limits`:** Ein ungebremster Vorgang zieht die Leitung leer.
+Das trifft nicht nur die Gäste — teilt sich der Cluster-Verkehr dieselbe
+Leitung, kann ein Wiederherstellen Corosync abschnüren, und im schlimmsten
+Fall verlieren die Nodes darüber ihr Quorum. Achtung bei der Einheit:
+Proxmox rechnet unter *Rechenzentrum → Optionen* in **KiB/s**, nicht in
+MB/s wie an Platten und Netzwerkkarten.
+
+### Regelmäßiger Bericht
+
+Die Empfehlungen von Hand aufzurufen hilft nur dem, der daran denkt. Der
+Bericht sieht in festem Abstand selbst nach und meldet sich per Mail:
+
+```yaml
+report:
+  mode: enforce     # off = aus, report = nur ins Protokoll, enforce = Mail
+  node: vmh01       # nur dieser Node verschickt
+  every: 168h       # eine Woche
+```
+
+| Schlüssel | Vorgabe | Bedeutung |
+|---|---|---|
+| `mode` | `off` | `off`, `report` oder `enforce` — wie überall |
+| `node` | — | welcher Node verschickt; **Pflicht**, wenn der Bericht an ist |
+| `every` | `168h` | Abstand zwischen zwei Berichten |
+
+**Warum `node` Pflicht ist:** Läuft der Dienst auf jedem Node, würde ohne
+diese Angabe jede Instanz denselben Bericht verschicken — bei drei Nodes
+also drei gleiche Mails. Fehlt die Angabe bei eingeschaltetem Bericht,
+startet der Dienst nicht und sagt warum.
+
+**Verschickt wird nur, wenn es etwas zu melden gibt.** Eine Mail, die jede
+Woche „alles in Ordnung" sagt, liest nach dem vierten Mal niemand mehr —
+und dann auch die nicht mehr, in der etwas steht.
+
+Der Bericht enthält, was die eingeschalteten [Empfehlungen](#empfehlungen)
+gefunden haben. Wer einen Punkt bewusst so lassen will, schaltet die
+zugehörige Prüfung ab; sie taucht dann auch im Bericht nicht mehr auf. Das
+ist die Lautstärkeregelung.
+
+**Der erste Bericht geht gleich nach dem Einschalten hinaus.** So zeigt
+sich sofort, ob der Mailweg steht — und nicht erst in einer Woche, wenn
+der erste Bericht ausbleibt und niemand weiß, ob das gut oder schlecht
+ist. Der Zeitpunkt des letzten Versands liegt als `report.json` neben dem
+`state_file`, damit ein Update des Dienstes den Rhythmus nicht von vorn
+beginnen lässt.
+
+Zwei Fälle gelten ausdrücklich **nicht** als erledigt und werden beim
+nächsten Durchlauf wiederholt: ein fehlgeschlagener Versand, und ein
+Durchlauf, in dem eine Prüfung nicht laufen konnte. Sonst fiele der
+Bericht dieser Woche aus, weil die API zwei Minuten nicht erreichbar war.
 
 ### Abweichungen je Node
 
@@ -334,6 +479,10 @@ nodes:
       iothread: report    # neu im Cluster, erst einmal beobachten
     services:
       restart_limit: 5    # dieser Node hat eine Vorgeschichte
+    advice:
+      backup_coverage: off  # hier stehen nur Wegwerf-Gäste
+    report:
+      every: 24h            # dieser Node wird enger beobachtet
     pools:
       local-pool:         # gleicher Name, langsamere Platte
         mbps_wr: 80

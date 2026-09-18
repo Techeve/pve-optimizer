@@ -339,24 +339,298 @@ func TestSmtpPasswortAusUmgebung(t *testing.T) {
 	path := writeConfig(t, `
 defaults:
   mbps_rd: 200
-services:
-  mode: enforce
-  mail:
-    to: admin@example.com
-    from: pve@example.com
-    server: mail.example.com:25
-    username: pve
+mail:
+  to: admin@example.com
+  from: pve@example.com
+  server: mail.example.com:25
+  username: pve
 `)
 
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load() = %v", err)
 	}
-	settings, err := cfg.ServicesFor("vmh03")
+	settings, err := cfg.MailFor("vmh03")
 	if err != nil {
-		t.Fatalf("ServicesFor() = %v", err)
+		t.Fatalf("MailFor() = %v", err)
 	}
-	if settings.Mail.Password != "geheim" {
-		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Mail.Password)
+	if settings.Password != "geheim" {
+		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Password)
+	}
+	if settings.To != "admin@example.com" {
+		t.Errorf("To = %q, erwartet die Adresse aus der Konfiguration", settings.To)
+	}
+}
+
+// Bis v0.5.x stand der Mailzugang unter services.mail. Ihn stillschweigend
+// zu überlesen hieße: Der Dienst läuft, und die Warnung, für die er da
+// ist, kommt nie an.
+func TestAlterMailplatzWirdAbgewiesen(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+services:
+  mode: enforce
+  mail:
+    to: admin@example.com
+    server: mail.example.com:25
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() nahm die alte Schreibweise an")
+	}
+	if !strings.Contains(err.Error(), "oberster ebene") {
+		t.Errorf("Fehler = %v, erwartet den Hinweis auf den neuen Platz", err)
+	}
+}
+
+func TestMailJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+nodes:
+  vmh03:
+    mail:
+      to: node-admin@example.com
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	allgemein, err := cfg.MailFor("vmh01")
+	if err != nil {
+		t.Fatalf("MailFor(vmh01) = %v", err)
+	}
+	if allgemein.To != "admin@example.com" {
+		t.Errorf("vmh01 To = %q", allgemein.To)
+	}
+
+	abweichend, err := cfg.MailFor("vmh03")
+	if err != nil {
+		t.Fatalf("MailFor(vmh03) = %v", err)
+	}
+	if abweichend.To != "node-admin@example.com" {
+		t.Errorf("vmh03 To = %q, erwartet die Adresse des Nodes", abweichend.To)
+	}
+	// Was der Node nicht nennt, bleibt so, wie es clusterweit steht.
+	if abweichend.Server != "mail.example.com:25" {
+		t.Errorf("vmh03 Server = %q, erwartet den clusterweiten Server", abweichend.Server)
+	}
+}
+
+func TestHalbEingerichteteMailWirdAbgewiesen(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\nmail:\n  to: a@b.de\n")
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() nahm einen Zugang ohne Server an")
+	}
+}
+
+func TestEmpfehlungenVorgabeAn(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	set, err := cfg.AdviceFor("vmh03")
+	if err != nil {
+		t.Fatalf("AdviceFor() = %v", err)
+	}
+	if len(set) == 0 {
+		t.Fatal("AdviceFor() lieferte keine Prüfungen")
+	}
+	for _, check := range set {
+		if check.Mode() != mode.Report {
+			t.Errorf("%s = %q, erwartet %q — Empfehlungen ändern nichts und sind daher an",
+				check.Name(), check.Mode(), mode.Report)
+		}
+	}
+}
+
+func TestEmpfehlungenJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+advice:
+  backup_coverage:
+    mode: report
+    ignore: [101, 3000]
+nodes:
+  vmh03:
+    advice:
+      backup_coverage: off
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	modeOf := func(node, name string) mode.Mode {
+		t.Helper()
+		set, err := cfg.AdviceFor(node)
+		if err != nil {
+			t.Fatalf("AdviceFor(%s) = %v", node, err)
+		}
+		for _, check := range set {
+			if check.Name() == name {
+				return check.Mode()
+			}
+		}
+		t.Fatalf("prüfung %q fehlt", name)
+		return ""
+	}
+
+	if got := modeOf("vmh01", "backup_coverage"); got != mode.Report {
+		t.Errorf("vmh01 = %q, erwartet %q", got, mode.Report)
+	}
+	if got := modeOf("vmh03", "backup_coverage"); got != mode.Off {
+		t.Errorf("vmh03 = %q, erwartet %q vom Node", got, mode.Off)
+	}
+}
+
+func TestEmpfehlungenTippfehlerWirdAbgewiesen(t *testing.T) {
+	tests := map[string]string{
+		"unbekannte prüfung": "advice:\n  backup_coverrage: report\n",
+		"unbekannte option":  "advice:\n  backup_coverage:\n    ignoore: [1]\n",
+		"enforce":            "advice:\n  replication_rate: enforce\n",
+	}
+
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, "defaults:\n  mbps_rd: 200\n"+block)
+			if _, err := Load(path); err == nil {
+				t.Fatal("Load() nahm die Konfiguration an")
+			}
+		})
+	}
+}
+
+// Ein Probelauf schwächt Empfehlungen nicht ab — sie ändern ohnehin nichts.
+func TestProbelaufLaesstEmpfehlungenUnberuehrt(t *testing.T) {
+	path := writeConfig(t, "dry_run: true\ndefaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	set, err := cfg.AdviceFor("vmh03")
+	if err != nil {
+		t.Fatalf("AdviceFor() = %v", err)
+	}
+	for _, check := range set {
+		if check.Mode() != mode.Report {
+			t.Errorf("%s = %q, erwartet %q", check.Name(), check.Mode(), mode.Report)
+		}
+	}
+}
+
+func TestBerichtVorgabeAus(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	settings, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor() = %v", err)
+	}
+	if settings.Mode != mode.Off {
+		t.Errorf("Mode = %q, erwartet %q", settings.Mode, mode.Off)
+	}
+	if settings.Every != 7*24*time.Hour {
+		t.Errorf("Every = %s, erwartet eine Woche", settings.Every)
+	}
+}
+
+func TestBerichtJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+report:
+  mode: enforce
+  node: vmh01
+  every: 168h
+nodes:
+  vmh03:
+    report:
+      every: 24h
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	allgemein, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor(vmh01) = %v", err)
+	}
+	if allgemein.Every != 168*time.Hour || allgemein.Node != "vmh01" {
+		t.Errorf("vmh01: Every = %s, Node = %q", allgemein.Every, allgemein.Node)
+	}
+
+	abweichend, err := cfg.ReportFor("vmh03")
+	if err != nil {
+		t.Fatalf("ReportFor(vmh03) = %v", err)
+	}
+	if abweichend.Every != 24*time.Hour {
+		t.Errorf("vmh03: Every = %s, erwartet 24h vom Node", abweichend.Every)
+	}
+	// Was der Node nicht nennt, bleibt so, wie es clusterweit steht.
+	if abweichend.Mode != mode.Enforce || abweichend.Node != "vmh01" {
+		t.Errorf("vmh03: Mode = %q, Node = %q, erwartet die clusterweite Einstellung",
+			abweichend.Mode, abweichend.Node)
+	}
+}
+
+func TestBerichtImProbelauf(t *testing.T) {
+	path := writeConfig(t, `
+dry_run: true
+defaults:
+  mbps_rd: 200
+report:
+  mode: enforce
+  node: vmh01
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	settings, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor() = %v", err)
+	}
+	if settings.Mode != mode.Report {
+		t.Errorf("Mode = %q, erwartet %q — dry_run senkt auch den Bericht ab", settings.Mode, mode.Report)
+	}
+}
+
+func TestBerichtOhneNodeWirdAbgewiesen(t *testing.T) {
+	// Ohne zuständigen Node verschickt jede Instanz denselben Bericht.
+	tests := map[string]string{
+		"ohne node":             "report:\n  mode: enforce\n",
+		"abstand zu kurz":       "report:\n  mode: enforce\n  node: vmh01\n  every: 30s\n",
+		"unbekannter schlüssel": "report:\n  mode: enforce\n  node: vmh01\n  wöchentlich: true\n",
+	}
+
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, "defaults:\n  mbps_rd: 200\n"+block)
+			if _, err := Load(path); err == nil {
+				t.Fatal("Load() nahm die Konfiguration an")
+			}
+		})
 	}
 }

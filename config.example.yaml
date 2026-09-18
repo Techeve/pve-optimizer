@@ -238,24 +238,125 @@ rules:
 #   # Zähler fällt auf null, die nächste Störung beginnt von vorn.
 #   stable_after: 24h
 #
-#   # Wohin die Meldung geht, wenn die Grenze erreicht ist. Ohne diesen
-#   # Abschnitt bleibt sie im Protokoll.
-#   #
-#   # Bewusst ein eigener Zugang statt des sendmail des Nodes: Ein frisch
-#   # aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
-#   # und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg
-#   # landet in der Warteschlange und nie bei einem Menschen.
-#   mail:
-#     to: admin@example.com
-#     from: pve-optimizer@example.com
-#     server: mail.example.com:25
-#     # Nur, wenn der Server eine Anmeldung verlangt. Das Passwort gehört
-#     # nicht hierher, sondern in die Umgebungsvariable
-#     # PVE_OPTIMIZER_SMTP_PASSWORD (siehe systemd-Unit im README).
-#     username: ""
+#   # Wohin die Meldung geht, steht weiter unten unter "mail:" — der
+#   # Zugang gilt für den ganzen Dienst.
 #
 # Der Zählerstand liegt neben dem Stand der Aufgabenliste, als
 # services.json im Verzeichnis von "state_file" oben.
+
+# ---------------------------------------------------------------------------
+# Mailzugang
+# ---------------------------------------------------------------------------
+#
+# Ein Zugang für den ganzen Dienst: Dienst-Monitor und alles Weitere, was
+# sich melden muss, teilen ihn sich.
+#
+# Bewusst ein eigener SMTP-Zugang und nicht das sendmail des Nodes: Ein
+# frisch aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
+# und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg
+# landet in der Warteschlange und nie bei einem Menschen.
+#
+# Ohne diesen Abschnitt bleibt jede Meldung im Protokoll — eine gültige
+# Wahl: Der Dienst-Monitor startet abgestürzte Dienste auch dann wieder.
+#
+# Achtung beim Umstieg von v0.5.x: Der Zugang stand vorher unter
+# "services.mail". Wer ihn dort stehen lässt, bekommt beim Start einen
+# Fehler mit dem Hinweis auf den neuen Platz.
+#
+# mail:
+#   to: admin@example.com
+#   server: mail.example.com:25
+#   # Vorgabe: pve-optimizer@<rechnername> — dann steht im Posteingang,
+#   # von welchem Node die Meldung kam.
+#   from: ""
+#   # Nur, wenn der Server eine Anmeldung verlangt. Das Passwort gehört
+#   # nicht hierher, sondern in die Umgebungsvariable
+#   # PVE_OPTIMIZER_SMTP_PASSWORD (siehe systemd-Unit im README).
+#   username: ""
+
+# ---------------------------------------------------------------------------
+# Empfehlungen
+# ---------------------------------------------------------------------------
+#
+# Prüfungen, die nachsehen und sagen, was auffällt — und dabei NICHTS
+# ändern. Manches gehört in Menschenhand: Welche VM in welchen
+# Sicherungsauftrag gehört, mit welchem Zeitplan und welcher Aufbewahrung,
+# weiß der Dienst nicht und soll es nicht raten.
+#
+# Aufruf von Hand:
+#   pve-optimizer -config /etc/pve-optimizer/config.yaml -check
+#
+# Anders als die Regeln sind sie von Haus aus AN — sie ändern nichts, und
+# was man nicht sieht, kann man nicht abstellen. Erlaubt sind nur "off" und
+# "report"; "enforce" weist der Dienst beim Start ab. dry_run wirkt hier
+# nicht, es gäbe nichts abzuschwächen.
+advice:
+  # Gäste, die kein Sicherungsauftrag erfasst.
+  #
+  # Die Frage beantwortet Proxmox selbst — die Feinheiten von "all",
+  # "pool" und "exclude" sind hier nicht nachgebaut.
+  #
+  # Der häufigste Weg in die Lücke ist harmlos und deshalb tückisch: Ein
+  # Auftrag mit fester VMID-Liste erfasst neue Gäste nicht. Wer eine VM
+  # anlegt und den Auftrag nicht anfasst, hat sie nicht gesichert.
+  backup_coverage:
+    mode: report
+    # Gäste, die bewusst keine Sicherung brauchen — Testgäste,
+    # Wegwerf-VMs, Gäste mit eigener Sicherung im Gast.
+    #
+    # Die Prüfung meldet auch verwaiste Einträge: Nummern, zu denen es
+    # keinen Gast mehr gibt. Proxmox vergibt gelöschte VMIDs wieder, ein
+    # alter Eintrag würde sonst stillschweigend einen neuen Gast ausnehmen.
+    ignore: []
+
+  # Fehlende Bandbreitengrenzen unter Rechenzentrum → Optionen.
+  #
+  # Ein ungebremster Vorgang zieht die Leitung leer. Teilt sich der
+  # Cluster-Verkehr dieselbe Leitung, kann ein Wiederherstellen Corosync
+  # abschnüren — im schlimmsten Fall verlieren die Nodes ihr Quorum.
+  #
+  # Achtung bei der Einheit: Proxmox rechnet dort in KiB/s, nicht in MB/s
+  # wie an Platten und Netzwerkkarten. "default" deckt alles ab, was keine
+  # eigene Grenze hat.
+  bandwidth_limits: report
+
+  # Replikationsaufträge ohne Ratenbegrenzung. Nach einer größeren
+  # Änderung im Gast überträgt ein Auftrag schlagartig viel und nimmt
+  # sich, was die Leitung hergibt. Die Rate wird dort in MB/s angegeben.
+  replication_rate: report
+
+# ---------------------------------------------------------------------------
+# Regelmäßiger Bericht
+# ---------------------------------------------------------------------------
+#
+# Sieht in festem Abstand selbst nach, was die Empfehlungen oben finden,
+# und meldet sich per Mail. Die Empfehlungen von Hand aufzurufen hilft nur
+# dem, der daran denkt.
+#
+# Verschickt wird nur, wenn es etwas zu melden gibt. Eine Mail, die jede
+# Woche "alles in Ordnung" sagt, liest nach dem vierten Mal niemand mehr —
+# und dann auch die nicht mehr, in der etwas steht.
+#
+# Der Bericht enthält, was die EINGESCHALTETEN Prüfungen gefunden haben.
+# Wer einen Punkt bewusst so lassen will, schaltet die Prüfung unter
+# "advice:" ab; sie taucht dann auch hier nicht mehr auf.
+#
+# Der erste Bericht geht gleich nach dem Einschalten hinaus — so zeigt sich
+# sofort, ob der Mailweg steht. Der Zeitpunkt des letzten Versands liegt
+# als report.json neben "state_file" oben.
+#
+# report:
+#   # off = aus, report = nur ins Protokoll, enforce = Mail.
+#   # dry_run oben senkt ihn auf "report" ab.
+#   mode: enforce
+#
+#   # Welcher Node verschickt. PFLICHT, wenn der Bericht an ist: Läuft der
+#   # Dienst auf jedem Node, würde sonst jede Instanz denselben Bericht
+#   # schicken — bei drei Nodes also drei gleiche Mails.
+#   node: vmh01
+#
+#   # Abstand zwischen zwei Berichten.
+#   every: 168h
 
 # ---------------------------------------------------------------------------
 # Abweichungen je Node
@@ -295,6 +396,13 @@ rules:
 #     services:
 #       mode: enforce
 #       restart_limit: 5
+#     # Auf diesem Node stehen nur Wegwerf-Gäste — die Backup-Prüfung
+#     # würde hier jede Woche dasselbe melden.
+#     advice:
+#       backup_coverage: off
+#     # Dieser Node wird enger beobachtet.
+#     report:
+#       every: 24h
 #     pools:
 #       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
 #       local-pool:

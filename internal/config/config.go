@@ -14,8 +14,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"pve-optimizer/internal/advice"
 	"pve-optimizer/internal/limits"
+	"pve-optimizer/internal/mail"
 	"pve-optimizer/internal/mode"
+	"pve-optimizer/internal/report"
 	"pve-optimizer/internal/rules"
 	"pve-optimizer/internal/services"
 )
@@ -66,9 +69,21 @@ type Config struct {
 	// Rules sind die Regeln, die clusterweit gelten. Ausgewertet werden
 	// sie im Paket rules — jede Regel kennt ihre eigenen Optionen.
 	Rules map[string]yaml.Node `yaml:"rules"`
+	// Mail ist der Zugang zum Mailserver. Er gilt für den ganzen Dienst —
+	// Dienst-Monitor und Bericht teilen ihn sich.
+	Mail yaml.Node `yaml:"mail"`
+
 	// Services ist der Dienst-Monitor, der abgestürzte systemd-Dienste
 	// des Nodes wieder hochholt.
 	Services yaml.Node `yaml:"services"`
+
+	// Advice sind die Prüfungen, die auf ungünstige Einstellungen
+	// hinweisen, ohne etwas zu ändern.
+	Advice map[string]yaml.Node `yaml:"advice"`
+
+	// Report verschickt in festem Abstand, was die Prüfungen gefunden
+	// haben.
+	Report yaml.Node `yaml:"report"`
 
 	// Nodes weicht davon ab, je Node. Genannt wird nur, was anders ist.
 	Nodes map[string]NodeSettings `yaml:"nodes"`
@@ -81,6 +96,9 @@ type NodeSettings struct {
 	Defaults limits.Profile            `yaml:"defaults"`
 	Pools    map[string]limits.Profile `yaml:"pools"`
 	Services yaml.Node                 `yaml:"services"`
+	Advice   map[string]yaml.Node      `yaml:"advice"`
+	Mail     yaml.Node                 `yaml:"mail"`
+	Report   yaml.Node                 `yaml:"report"`
 }
 
 type API struct {
@@ -179,6 +197,15 @@ func (c *Config) validate() error {
 	if err := c.validateServices(); err != nil {
 		return err
 	}
+	if err := c.validateAdvice(); err != nil {
+		return err
+	}
+	if err := c.validateMail(); err != nil {
+		return err
+	}
+	if err := c.validateReport(); err != nil {
+		return err
+	}
 	if c.Mode == ModeAPI {
 		return c.validateAPI()
 	}
@@ -226,6 +253,46 @@ func (c *Config) validateServices() error {
 	}
 	for node := range c.Nodes {
 		if _, err := c.ServicesFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateAdvice baut die Prüfungen einmal für jeden genannten Node durch
+// — aus demselben Grund wie validateRules.
+func (c *Config) validateAdvice() error {
+	if _, err := c.AdviceFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.AdviceFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateMail baut den Zugang einmal für jeden genannten Node durch.
+func (c *Config) validateMail() error {
+	if _, err := c.MailFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.MailFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateReport baut den Bericht einmal für jeden genannten Node durch.
+func (c *Config) validateReport() error {
+	if _, err := c.ReportFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.ReportFor(node); err != nil {
 			return fmt.Errorf("nodes.%s: %w", node, err)
 		}
 	}
@@ -328,12 +395,19 @@ func (c *Config) ServicesFor(node string) (services.Settings, error) {
 		if layer.IsZero() {
 			continue
 		}
+		// Bis v0.5.x stand der Mailzugang hier. Ihn stillschweigend zu
+		// überlesen hieße: Der Dienst läuft, und die Warnung, für die er
+		// da ist, kommt nie an.
+		if hasKey(layer, "mail") {
+			return services.Settings{}, errors.New(
+				"services.mail gibt es nicht mehr — der mailzugang steht jetzt unter \"mail:\" auf oberster ebene," +
+					" weil ihn auch der bericht braucht")
+		}
 		if err := decodeStrict(layer, &settings); err != nil {
 			return services.Settings{}, fmt.Errorf("services: %w", err)
 		}
 	}
 
-	settings.Mail.Password = os.Getenv(smtpPasswordEnv)
 	if c.DryRun && settings.Mode == mode.Enforce {
 		settings.Mode = mode.Report
 	}
@@ -341,6 +415,15 @@ func (c *Config) ServicesFor(node string) (services.Settings, error) {
 		return services.Settings{}, fmt.Errorf("services: %w", err)
 	}
 	return settings, nil
+}
+
+// AdviceFor baut die Prüfungen für einen Node: die clusterweiten
+// Einstellungen, darüber die Abweichung dieses Nodes.
+//
+// dry_run wirkt hier bewusst nicht: Eine Empfehlung ändert ohnehin nichts,
+// ein Probelauf hätte nichts abzuschwächen.
+func (c *Config) AdviceFor(node string) (advice.Set, error) {
+	return advice.Build(c.Advice, c.Nodes[node].Advice)
 }
 
 // MonitoredNode ist der Name, unter dem der Dienst-Monitor arbeitet.
@@ -353,10 +436,84 @@ func (c *Config) MonitoredNode() string {
 	return c.Host
 }
 
+// ReportFor baut den Bericht für einen Node: die clusterweite
+// Einstellung, darüber die Abweichung dieses Nodes.
+//
+// Ein Probelauf wirkt hier wie überall: dry_run senkt den Bericht auf
+// "report" ab — die Befunde stehen dann im Protokoll, verschickt wird
+// nichts.
+func (c *Config) ReportFor(node string) (report.Settings, error) {
+	settings := report.DefaultSettings()
+	for _, layer := range []yaml.Node{c.Report, c.Nodes[node].Report} {
+		if layer.IsZero() {
+			continue
+		}
+		if err := decodeStrict(layer, &settings); err != nil {
+			return report.Settings{}, fmt.Errorf("report: %w", err)
+		}
+	}
+
+	if c.DryRun && settings.Mode == mode.Enforce {
+		settings.Mode = mode.Report
+	}
+	if err := settings.Check(); err != nil {
+		return report.Settings{}, fmt.Errorf("report: %w", err)
+	}
+	return settings, nil
+}
+
+// MailFor baut den Mailzugang für einen Node: die clusterweite
+// Einstellung, darüber die Abweichung dieses Nodes.
+//
+// Das Passwort kommt aus der Umgebung und nie aus der Datei — die liegt
+// neben dem Binary und wird mitkopiert.
+func (c *Config) MailFor(node string) (mail.Settings, error) {
+	var settings mail.Settings
+	for _, layer := range []yaml.Node{c.Mail, c.Nodes[node].Mail} {
+		if layer.IsZero() {
+			continue
+		}
+		if err := decodeStrict(layer, &settings); err != nil {
+			return mail.Settings{}, fmt.Errorf("mail: %w", err)
+		}
+	}
+
+	settings.Password = os.Getenv(smtpPasswordEnv)
+	if err := settings.Check(c.Host); err != nil {
+		return mail.Settings{}, fmt.Errorf("mail: %w", err)
+	}
+	return settings, nil
+}
+
+// Sender ist der Versandweg dieses Nodes — oder einer, der nur
+// protokolliert, wenn kein Mailserver eingerichtet ist.
+func (c *Config) Sender(node string) (mail.Sender, error) {
+	settings, err := c.MailFor(node)
+	if err != nil {
+		return nil, err
+	}
+	return mail.NewSender(settings, c.Host), nil
+}
+
+// hasKey meldet, ob eine Zuordnung den Schlüssel trägt.
+func hasKey(node yaml.Node, name string) bool {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ServiceStateFile liegt neben dem Stand der Aufgabenliste. Ein eigener
 // Schlüssel dafür wäre ein Knopf, an dem niemand je drehen will.
 func (c *Config) ServiceStateFile() string {
 	return filepath.Join(filepath.Dir(c.StateFile), "services.json")
+}
+
+// ReportStateFile liegt aus demselben Grund daneben.
+func (c *Config) ReportStateFile() string {
+	return filepath.Join(filepath.Dir(c.StateFile), "report.json")
 }
 
 // decodeStrict liest einen Abschnitt und weist unbekannte Schlüssel ab,

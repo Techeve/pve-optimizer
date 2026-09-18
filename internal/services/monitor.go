@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"pve-optimizer/internal/mail"
 	"pve-optimizer/internal/mode"
 )
 
@@ -37,9 +38,6 @@ type Settings struct {
 	// gilt: Der Zähler fällt dann auf null, und die nächste Störung
 	// beginnt von vorn.
 	StableAfter time.Duration `yaml:"stable_after"`
-	// Mail ist der Weg, auf dem die Meldung hinausgeht. Fehlt er, bleibt
-	// sie im Protokoll.
-	Mail Mail `yaml:"mail"`
 }
 
 // DefaultSettings sind die Vorgaben. Aus wie alles, was eingreift —
@@ -73,7 +71,7 @@ func (s Settings) Check() error {
 	if s.StableAfter < time.Hour {
 		return fmt.Errorf("stable_after muss mindestens 1h sein, ist %s", s.StableAfter)
 	}
-	return s.Mail.Check()
+	return nil
 }
 
 // Monitor überwacht die eingestellten Units.
@@ -81,15 +79,17 @@ type Monitor struct {
 	settings Settings
 	node     string
 	systemd  systemd
-	mail     Sender
+	mail     mail.Sender
 	state    *state
 	log      *slog.Logger
 	now      func() time.Time
 }
 
 // New baut den Monitor. statePath ist die Datei, in der die Zähler einen
-// Neustart des Dienstes überdauern.
-func New(settings Settings, node, statePath string, log *slog.Logger) (*Monitor, error) {
+// Neustart des Dienstes überdauern; sender ist der Weg, auf dem die
+// Meldung hinausgeht — er gehört dem ganzen Dienst und wird hier nur
+// benutzt.
+func New(settings Settings, node, statePath string, sender mail.Sender, log *slog.Logger) (*Monitor, error) {
 	loaded, err := loadState(statePath)
 	if err != nil {
 		return nil, err
@@ -98,7 +98,7 @@ func New(settings Settings, node, statePath string, log *slog.Logger) (*Monitor,
 		settings: settings,
 		node:     node,
 		systemd:  systemctl{},
-		mail:     settings.Mail.Sender(),
+		mail:     sender,
 		state:    loaded,
 		log:      log,
 		now:      time.Now,
