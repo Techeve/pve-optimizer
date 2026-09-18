@@ -238,24 +238,41 @@ rules:
 #   # Zähler fällt auf null, die nächste Störung beginnt von vorn.
 #   stable_after: 24h
 #
-#   # Wohin die Meldung geht, wenn die Grenze erreicht ist. Ohne diesen
-#   # Abschnitt bleibt sie im Protokoll.
-#   #
-#   # Bewusst ein eigener Zugang statt des sendmail des Nodes: Ein frisch
-#   # aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
-#   # und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg
-#   # landet in der Warteschlange und nie bei einem Menschen.
-#   mail:
-#     to: admin@example.com
-#     from: pve-optimizer@example.com
-#     server: mail.example.com:25
-#     # Nur, wenn der Server eine Anmeldung verlangt. Das Passwort gehört
-#     # nicht hierher, sondern in die Umgebungsvariable
-#     # PVE_OPTIMIZER_SMTP_PASSWORD (siehe systemd-Unit im README).
-#     username: ""
+#   # Wohin die Meldung geht, steht weiter unten unter "mail:" — der
+#   # Zugang gilt für den ganzen Dienst.
 #
 # Der Zählerstand liegt neben dem Stand der Aufgabenliste, als
 # services.json im Verzeichnis von "state_file" oben.
+
+# ---------------------------------------------------------------------------
+# Mailzugang
+# ---------------------------------------------------------------------------
+#
+# Ein Zugang für den ganzen Dienst: Dienst-Monitor und alles Weitere, was
+# sich melden muss, teilen ihn sich.
+#
+# Bewusst ein eigener SMTP-Zugang und nicht das sendmail des Nodes: Ein
+# frisch aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
+# und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg
+# landet in der Warteschlange und nie bei einem Menschen.
+#
+# Ohne diesen Abschnitt bleibt jede Meldung im Protokoll — eine gültige
+# Wahl: Der Dienst-Monitor startet abgestürzte Dienste auch dann wieder.
+#
+# Achtung beim Umstieg von v0.5.x: Der Zugang stand vorher unter
+# "services.mail". Wer ihn dort stehen lässt, bekommt beim Start einen
+# Fehler mit dem Hinweis auf den neuen Platz.
+#
+# mail:
+#   to: admin@example.com
+#   server: mail.example.com:25
+#   # Vorgabe: pve-optimizer@<rechnername> — dann steht im Posteingang,
+#   # von welchem Node die Meldung kam.
+#   from: ""
+#   # Nur, wenn der Server eine Anmeldung verlangt. Das Passwort gehört
+#   # nicht hierher, sondern in die Umgebungsvariable
+#   # PVE_OPTIMIZER_SMTP_PASSWORD (siehe systemd-Unit im README).
+#   username: ""
 
 # ---------------------------------------------------------------------------
 # Empfehlungen

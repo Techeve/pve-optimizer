@@ -282,10 +282,6 @@ services:
     - pvestatd.service
   restart_limit: 3      # so viele Neustarts, dann ist Schluss
   stable_after: 24h     # so lange durchgelaufen = wieder gesund
-  mail:
-    to: admin@example.com
-    from: pve-optimizer@example.com
-    server: mail.example.com:25
 ```
 
 | Schlüssel | Vorgabe | Bedeutung |
@@ -294,7 +290,9 @@ services:
 | `units` | `[pvestatd.service]` | die zu überwachenden systemd-Units |
 | `restart_limit` | `3` | Neustarts je Dienst, bevor der Monitor aufgibt |
 | `stable_after` | `24h` | Laufzeit am Stück, nach der der Zähler auf null fällt |
-| `mail` | — | wohin die Meldung geht; ohne den Abschnitt bleibt sie im Protokoll |
+
+Wohin die Meldung geht, steht unter [`mail:`](#mailzugang) — der Zugang
+gilt für den ganzen Dienst.
 
 Was der Monitor **nicht** anfasst: einen Dienst, den jemand angehalten hat.
 Der steht auf `inactive`, nicht auf `failed` — wer einen Dienst abschaltet,
@@ -311,13 +309,40 @@ durch einen Neustart aushebeln.
 Der Monitor sieht immer nur die Maschine, auf der er läuft. Bei `mode: api`
 ist das nicht zwangsläufig der Node, dessen Gäste der Dienst betreut.
 
-**Zur Mail:** Der Weg geht bewusst über einen eigenen SMTP-Zugang und nicht
-über das `sendmail` des Nodes. Ein frisch aufgesetzter Proxmox-Node hat zwar
-ein postfix, aber keinen Relay und eine Platzhalteradresse als Empfänger —
-eine Mail über diesen Weg landet in der Warteschlange und nie bei einem
-Menschen. Verlangt der Server eine Anmeldung, gehört das Passwort nicht in
-die Konfiguration, sondern in die Umgebungsvariable
-`PVE_OPTIMIZER_SMTP_PASSWORD`.
+### Mailzugang
+
+Ein Zugang für den ganzen Dienst — der Dienst-Monitor benutzt ihn, und
+alles Weitere, was sich melden muss, ebenfalls:
+
+```yaml
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+  # from: pve-optimizer@vmh03      # Vorgabe: aus dem Rechnernamen
+  # username: pve                  # nur, wenn der Server eine Anmeldung verlangt
+```
+
+`from` darf fehlen — dann bildet der Dienst die Adresse aus dem
+Rechnernamen, und im Posteingang steht, von welchem Node die Meldung kam.
+Verlangt der Server eine Anmeldung, gehört das Passwort **nicht** hierher,
+sondern in die Umgebungsvariable `PVE_OPTIMIZER_SMTP_PASSWORD` (siehe
+systemd-Unit).
+
+Ohne diesen Abschnitt bleibt jede Meldung im Protokoll. Das ist eine
+gültige Wahl: Der Dienst-Monitor startet abgestürzte Dienste auch dann
+wieder.
+
+**Warum ein eigener SMTP-Zugang und nicht das `sendmail` des Nodes?** Ein
+frisch aufgesetzter Proxmox-Node hat zwar ein postfix, aber keinen Relay
+und eine Platzhalteradresse als Empfänger. Eine Mail über diesen Weg landet
+in der Warteschlange und nie bei einem Menschen — und eine Warnung, die
+niemand bekommt, ist schlimmer als keine.
+
+> **Umstieg von v0.5.x:** Der Zugang stand vorher unter `services.mail`.
+> Wer ihn dort stehen lässt, bekommt beim Start einen Fehler mit dem
+> Hinweis auf den neuen Platz — stillschweigend überlesen wird er nicht,
+> sonst liefe der Dienst und die Warnung käme nie an.
+
 
 ### Empfehlungen
 
