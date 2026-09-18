@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"pve-optimizer/internal/advice"
 	"pve-optimizer/internal/limits"
 	"pve-optimizer/internal/mode"
 	"pve-optimizer/internal/rules"
@@ -70,6 +71,10 @@ type Config struct {
 	// des Nodes wieder hochholt.
 	Services yaml.Node `yaml:"services"`
 
+	// Advice sind die Prüfungen, die auf ungünstige Einstellungen
+	// hinweisen, ohne etwas zu ändern.
+	Advice map[string]yaml.Node `yaml:"advice"`
+
 	// Nodes weicht davon ab, je Node. Genannt wird nur, was anders ist.
 	Nodes map[string]NodeSettings `yaml:"nodes"`
 }
@@ -81,6 +86,7 @@ type NodeSettings struct {
 	Defaults limits.Profile            `yaml:"defaults"`
 	Pools    map[string]limits.Profile `yaml:"pools"`
 	Services yaml.Node                 `yaml:"services"`
+	Advice   map[string]yaml.Node      `yaml:"advice"`
 }
 
 type API struct {
@@ -179,6 +185,9 @@ func (c *Config) validate() error {
 	if err := c.validateServices(); err != nil {
 		return err
 	}
+	if err := c.validateAdvice(); err != nil {
+		return err
+	}
 	if c.Mode == ModeAPI {
 		return c.validateAPI()
 	}
@@ -226,6 +235,20 @@ func (c *Config) validateServices() error {
 	}
 	for node := range c.Nodes {
 		if _, err := c.ServicesFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateAdvice baut die Prüfungen einmal für jeden genannten Node durch
+// — aus demselben Grund wie validateRules.
+func (c *Config) validateAdvice() error {
+	if _, err := c.AdviceFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.AdviceFor(node); err != nil {
 			return fmt.Errorf("nodes.%s: %w", node, err)
 		}
 	}
@@ -341,6 +364,15 @@ func (c *Config) ServicesFor(node string) (services.Settings, error) {
 		return services.Settings{}, fmt.Errorf("services: %w", err)
 	}
 	return settings, nil
+}
+
+// AdviceFor baut die Prüfungen für einen Node: die clusterweiten
+// Einstellungen, darüber die Abweichung dieses Nodes.
+//
+// dry_run wirkt hier bewusst nicht: Eine Empfehlung ändert ohnehin nichts,
+// ein Probelauf hätte nichts abzuschwächen.
+func (c *Config) AdviceFor(node string) (advice.Set, error) {
+	return advice.Build(c.Advice, c.Nodes[node].Advice)
 }
 
 // MonitoredNode ist der Name, unter dem der Dienst-Monitor arbeitet.

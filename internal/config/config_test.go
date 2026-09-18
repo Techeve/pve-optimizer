@@ -360,3 +360,103 @@ services:
 		t.Errorf("Password = %q, erwartet den Wert aus der Umgebung", settings.Mail.Password)
 	}
 }
+
+func TestEmpfehlungenVorgabeAn(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	set, err := cfg.AdviceFor("vmh03")
+	if err != nil {
+		t.Fatalf("AdviceFor() = %v", err)
+	}
+	if len(set) == 0 {
+		t.Fatal("AdviceFor() lieferte keine Prüfungen")
+	}
+	for _, check := range set {
+		if check.Mode() != mode.Report {
+			t.Errorf("%s = %q, erwartet %q — Empfehlungen ändern nichts und sind daher an",
+				check.Name(), check.Mode(), mode.Report)
+		}
+	}
+}
+
+func TestEmpfehlungenJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+advice:
+  backup_coverage:
+    mode: report
+    ignore: [101, 3000]
+nodes:
+  vmh03:
+    advice:
+      backup_coverage: off
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	modeOf := func(node, name string) mode.Mode {
+		t.Helper()
+		set, err := cfg.AdviceFor(node)
+		if err != nil {
+			t.Fatalf("AdviceFor(%s) = %v", node, err)
+		}
+		for _, check := range set {
+			if check.Name() == name {
+				return check.Mode()
+			}
+		}
+		t.Fatalf("prüfung %q fehlt", name)
+		return ""
+	}
+
+	if got := modeOf("vmh01", "backup_coverage"); got != mode.Report {
+		t.Errorf("vmh01 = %q, erwartet %q", got, mode.Report)
+	}
+	if got := modeOf("vmh03", "backup_coverage"); got != mode.Off {
+		t.Errorf("vmh03 = %q, erwartet %q vom Node", got, mode.Off)
+	}
+}
+
+func TestEmpfehlungenTippfehlerWirdAbgewiesen(t *testing.T) {
+	tests := map[string]string{
+		"unbekannte prüfung": "advice:\n  backup_coverrage: report\n",
+		"unbekannte option":  "advice:\n  backup_coverage:\n    ignoore: [1]\n",
+		"enforce":            "advice:\n  replication_rate: enforce\n",
+	}
+
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, "defaults:\n  mbps_rd: 200\n"+block)
+			if _, err := Load(path); err == nil {
+				t.Fatal("Load() nahm die Konfiguration an")
+			}
+		})
+	}
+}
+
+// Ein Probelauf schwächt Empfehlungen nicht ab — sie ändern ohnehin nichts.
+func TestProbelaufLaesstEmpfehlungenUnberuehrt(t *testing.T) {
+	path := writeConfig(t, "dry_run: true\ndefaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	set, err := cfg.AdviceFor("vmh03")
+	if err != nil {
+		t.Fatalf("AdviceFor() = %v", err)
+	}
+	for _, check := range set {
+		if check.Mode() != mode.Report {
+			t.Errorf("%s = %q, erwartet %q", check.Name(), check.Mode(), mode.Report)
+		}
+	}
+}

@@ -24,6 +24,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Version ausgeben und beenden")
 	debug := flag.Bool("debug", false, "ausführliche Protokollierung")
 	sweep := flag.Bool("sweep", false, "einmalig alle vorhandenen VMs anpassen und beenden")
+	check := flag.Bool("check", false, "Empfehlungen prüfen, Befunde ausgeben und beenden")
 	flag.Parse()
 
 	if *showVersion {
@@ -31,13 +32,13 @@ func main() {
 		return
 	}
 
-	if err := run(*configPath, *debug, *sweep); err != nil {
+	if err := run(*configPath, *debug, *sweep, *check); err != nil {
 		slog.Error("dienst beendet", "fehler", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string, debug, sweep bool) error {
+func run(configPath string, debug, sweep, check bool) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -57,6 +58,10 @@ func run(configPath string, debug, sweep bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if check {
+		return runChecks(ctx, cfg, client)
+	}
+
 	log.Info("pve-optimizer gestartet", "version", version.Version, "build", version.Build)
 	if sweep {
 		return w.Sweep(ctx)
@@ -65,6 +70,39 @@ func run(configPath string, debug, sweep bool) error {
 		return err
 	}
 	return w.Run(ctx)
+}
+
+// runChecks lässt die Empfehlungen einmal laufen und schreibt die Befunde
+// nach stdout — für den Aufruf von Hand. Bewusst kein Protokollformat:
+// Das hier liest ein Mensch.
+func runChecks(ctx context.Context, cfg *config.Config, client proxmox.Client) error {
+	set, err := cfg.AdviceFor(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+
+	findings, problems := set.Run(ctx, client)
+	for _, problem := range problems {
+		fmt.Fprintln(os.Stderr, "nicht geprüft:", problem)
+	}
+
+	if len(findings) == 0 {
+		fmt.Println("Keine Befunde — alles Geprüfte sieht gut aus.")
+		return nil
+	}
+
+	fmt.Printf("%d Befund(e):\n\n", len(findings))
+	for _, finding := range findings {
+		fmt.Println(finding)
+		fmt.Println()
+	}
+
+	// Befunde sind kein Fehler des Programms: Der Aufruf hat getan, was er
+	// sollte. Ein Fehlschlag-Status käme in Skripten als Störung an.
+	if len(problems) > 0 {
+		return fmt.Errorf("%d prüfung(en) konnten nicht laufen", len(problems))
+	}
+	return nil
 }
 
 // startMonitor stellt den Dienst-Monitor daneben, sofern er eingeschaltet
