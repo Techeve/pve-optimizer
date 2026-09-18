@@ -258,6 +258,57 @@ rules:
 # services.json im Verzeichnis von "state_file" oben.
 
 # ---------------------------------------------------------------------------
+# Empfehlungen
+# ---------------------------------------------------------------------------
+#
+# Prüfungen, die nachsehen und sagen, was auffällt — und dabei NICHTS
+# ändern. Manches gehört in Menschenhand: Welche VM in welchen
+# Sicherungsauftrag gehört, mit welchem Zeitplan und welcher Aufbewahrung,
+# weiß der Dienst nicht und soll es nicht raten.
+#
+# Aufruf von Hand:
+#   pve-optimizer -config /etc/pve-optimizer/config.yaml -check
+#
+# Anders als die Regeln sind sie von Haus aus AN — sie ändern nichts, und
+# was man nicht sieht, kann man nicht abstellen. Erlaubt sind nur "off" und
+# "report"; "enforce" weist der Dienst beim Start ab. dry_run wirkt hier
+# nicht, es gäbe nichts abzuschwächen.
+advice:
+  # Gäste, die kein Sicherungsauftrag erfasst.
+  #
+  # Die Frage beantwortet Proxmox selbst — die Feinheiten von "all",
+  # "pool" und "exclude" sind hier nicht nachgebaut.
+  #
+  # Der häufigste Weg in die Lücke ist harmlos und deshalb tückisch: Ein
+  # Auftrag mit fester VMID-Liste erfasst neue Gäste nicht. Wer eine VM
+  # anlegt und den Auftrag nicht anfasst, hat sie nicht gesichert.
+  backup_coverage:
+    mode: report
+    # Gäste, die bewusst keine Sicherung brauchen — Testgäste,
+    # Wegwerf-VMs, Gäste mit eigener Sicherung im Gast.
+    #
+    # Die Prüfung meldet auch verwaiste Einträge: Nummern, zu denen es
+    # keinen Gast mehr gibt. Proxmox vergibt gelöschte VMIDs wieder, ein
+    # alter Eintrag würde sonst stillschweigend einen neuen Gast ausnehmen.
+    ignore: []
+
+  # Fehlende Bandbreitengrenzen unter Rechenzentrum → Optionen.
+  #
+  # Ein ungebremster Vorgang zieht die Leitung leer. Teilt sich der
+  # Cluster-Verkehr dieselbe Leitung, kann ein Wiederherstellen Corosync
+  # abschnüren — im schlimmsten Fall verlieren die Nodes ihr Quorum.
+  #
+  # Achtung bei der Einheit: Proxmox rechnet dort in KiB/s, nicht in MB/s
+  # wie an Platten und Netzwerkkarten. "default" deckt alles ab, was keine
+  # eigene Grenze hat.
+  bandwidth_limits: report
+
+  # Replikationsaufträge ohne Ratenbegrenzung. Nach einer größeren
+  # Änderung im Gast überträgt ein Auftrag schlagartig viel und nimmt
+  # sich, was die Leitung hergibt. Die Rate wird dort in MB/s angegeben.
+  replication_rate: report
+
+# ---------------------------------------------------------------------------
 # Abweichungen je Node
 # ---------------------------------------------------------------------------
 #
@@ -295,6 +346,10 @@ rules:
 #     services:
 #       mode: enforce
 #       restart_limit: 5
+#     # Auf diesem Node stehen nur Wegwerf-Gäste — die Backup-Prüfung
+#     # würde hier jede Woche dasselbe melden.
+#     advice:
+#       backup_coverage: off
 #     pools:
 #       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
 #       local-pool:

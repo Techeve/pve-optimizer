@@ -47,7 +47,9 @@ einstellen lässt.
 `unused*` — dort akzeptiert Proxmox keine Plattenoptionen.
 
 Daneben kann er auf abgestürzte Dienste des Nodes aufpassen und sie wieder
-hochholen — siehe [Dienst-Monitor](#dienst-monitor).
+hochholen — siehe [Dienst-Monitor](#dienst-monitor) — und auf ungünstige
+Einstellungen hinweisen, ohne sie anzufassen — siehe
+[Empfehlungen](#empfehlungen).
 
 ## Betriebsarten
 
@@ -317,6 +319,73 @@ Menschen. Verlangt der Server eine Anmeldung, gehört das Passwort nicht in
 die Konfiguration, sondern in die Umgebungsvariable
 `PVE_OPTIMIZER_SMTP_PASSWORD`.
 
+### Empfehlungen
+
+Manches gehört in Menschenhand. Welche VM in welchen Sicherungsauftrag
+gehört, mit welchem Zeitplan und welcher Aufbewahrung, weiß der Dienst
+nicht — und er soll es auch nicht raten.
+
+Für solche Fälle gibt es **Empfehlungen**: Prüfungen, die nachsehen und
+sagen, was auffällt, warum es zählt und was zu tun ist. Sie ändern
+**nichts**. Diese Grenze steckt in der Bauweise, nicht in einem guten
+Vorsatz: Eine Prüfung bekommt einen Zugang zu Proxmox, der keine einzige
+schreibende Methode hat.
+
+```bash
+pve-optimizer -config /etc/pve-optimizer/config.yaml -check
+```
+
+```
+3 Befund(e):
+
+backup_coverage: VM 3000 (Test-VM) auf pve02
+    Warum:  kein sicherungsauftrag erfasst diesen gast — geht der speicher verloren, ist er weg
+    Was tun: in der oberfläche unter Rechenzentrum → Backup einem auftrag hinzufügen. …
+```
+
+| Prüfung | Was sie nachsieht | Optionen |
+|---|---|---|
+| `backup_coverage` | Gäste, die kein Sicherungsauftrag erfasst | `ignore` |
+| `bandwidth_limits` | fehlende Bandbreitengrenzen des Rechenzentrums | — |
+| `replication_rate` | Replikationsaufträge ohne Ratenbegrenzung | — |
+
+```yaml
+advice:
+  backup_coverage:
+    mode: report
+    ignore: [101, 3000]    # brauchen bewusst keine Sicherung
+  bandwidth_limits: report
+  replication_rate: off
+```
+
+Anders als die Regeln sind Empfehlungen **von Haus aus an**. Sie ändern
+nichts, und was man nicht sieht, kann man nicht abstellen. Erlaubt sind
+nur `off` und `report` — wer `enforce` einträgt, bekommt beim Start einen
+Fehler statt einer stillen Erwartung, die der Dienst nie erfüllt.
+`dry_run` wirkt hier nicht: Es gäbe nichts abzuschwächen.
+
+**Zu `backup_coverage`:** Die Frage, welche Gäste ein Auftrag erfasst,
+beantwortet **Proxmox selbst** (`/cluster/backup-info/not-backed-up`).
+Nachgebaut ist hier nichts — die Feinheiten von `all`, `pool` und
+`exclude` müssten sonst bei jeder Proxmox-Fassung nachgezogen werden.
+
+Der häufigste Weg in die Lücke ist harmlos und deshalb tückisch: Ein
+Auftrag mit fester VMID-Liste erfasst neue Gäste nicht. Wer eine VM anlegt
+und den Auftrag nicht anfasst, hat sie schlicht nicht gesichert.
+
+Gäste, die bewusst keine Sicherung brauchen, gehören unter `ignore`. Die
+Prüfung meldet dabei auch **verwaiste Einträge** — Nummern auf der Liste,
+zu denen es keinen Gast mehr gibt. Proxmox vergibt gelöschte VMIDs wieder,
+und ein alter Eintrag würde sonst irgendwann stillschweigend einen neuen
+Gast von der Prüfung ausnehmen.
+
+**Zu `bandwidth_limits`:** Ein ungebremster Vorgang zieht die Leitung leer.
+Das trifft nicht nur die Gäste — teilt sich der Cluster-Verkehr dieselbe
+Leitung, kann ein Wiederherstellen Corosync abschnüren, und im schlimmsten
+Fall verlieren die Nodes darüber ihr Quorum. Achtung bei der Einheit:
+Proxmox rechnet unter *Rechenzentrum → Optionen* in **KiB/s**, nicht in
+MB/s wie an Platten und Netzwerkkarten.
+
 ### Abweichungen je Node
 
 Alles Bisherige gilt clusterweit. Unter `nodes:` steht, was auf einzelnen
@@ -334,6 +403,8 @@ nodes:
       iothread: report    # neu im Cluster, erst einmal beobachten
     services:
       restart_limit: 5    # dieser Node hat eine Vorgeschichte
+    advice:
+      backup_coverage: off  # hier stehen nur Wegwerf-Gäste
     pools:
       local-pool:         # gleicher Name, langsamere Platte
         mbps_wr: 80
