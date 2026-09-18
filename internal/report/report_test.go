@@ -41,6 +41,13 @@ func (f *fakeCluster) Options(context.Context) (proxmox.Options, error) {
 func (f *fakeCluster) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
 	return nil, f.fehler
 }
+func (f *fakeCluster) Nodes(context.Context) ([]proxmox.Node, error) { return nil, f.fehler }
+func (f *fakeCluster) ZFSPools(context.Context, string) ([]proxmox.ZFSPool, error) {
+	return nil, f.fehler
+}
+func (f *fakeCluster) ZFSPoolStatus(context.Context, string, string) (proxmox.ZFSStatus, error) {
+	return proxmox.ZFSStatus{}, f.fehler
+}
 
 type fakeSender struct {
 	subjects []string
@@ -61,7 +68,9 @@ func (f *fakeSender) Describe() string { return "test" }
 func checks(t *testing.T) advice.Set {
 	t.Helper()
 	var parsed map[string]yaml.Node
-	if err := yaml.Unmarshal([]byte("replication_rate: off\n"), &parsed); err != nil {
+	// Nur die Sicherungsprüfung soll Befunde liefern.
+	aus := "replication_rate: off\nzfs_health: off\nzfs_redundancy: off\nmemory_overcommit: off\n"
+	if err := yaml.Unmarshal([]byte(aus), &parsed); err != nil {
 		t.Fatalf("testkonfiguration: %v", err)
 	}
 	set, err := advice.Build(parsed, nil)
