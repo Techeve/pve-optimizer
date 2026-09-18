@@ -326,6 +326,39 @@ advice:
   replication_rate: report
 
 # ---------------------------------------------------------------------------
+# Regelmäßiger Bericht
+# ---------------------------------------------------------------------------
+#
+# Sieht in festem Abstand selbst nach, was die Empfehlungen oben finden,
+# und meldet sich per Mail. Die Empfehlungen von Hand aufzurufen hilft nur
+# dem, der daran denkt.
+#
+# Verschickt wird nur, wenn es etwas zu melden gibt. Eine Mail, die jede
+# Woche "alles in Ordnung" sagt, liest nach dem vierten Mal niemand mehr —
+# und dann auch die nicht mehr, in der etwas steht.
+#
+# Der Bericht enthält, was die EINGESCHALTETEN Prüfungen gefunden haben.
+# Wer einen Punkt bewusst so lassen will, schaltet die Prüfung unter
+# "advice:" ab; sie taucht dann auch hier nicht mehr auf.
+#
+# Der erste Bericht geht gleich nach dem Einschalten hinaus — so zeigt sich
+# sofort, ob der Mailweg steht. Der Zeitpunkt des letzten Versands liegt
+# als report.json neben "state_file" oben.
+#
+# report:
+#   # off = aus, report = nur ins Protokoll, enforce = Mail.
+#   # dry_run oben senkt ihn auf "report" ab.
+#   mode: enforce
+#
+#   # Welcher Node verschickt. PFLICHT, wenn der Bericht an ist: Läuft der
+#   # Dienst auf jedem Node, würde sonst jede Instanz denselben Bericht
+#   # schicken — bei drei Nodes also drei gleiche Mails.
+#   node: vmh01
+#
+#   # Abstand zwischen zwei Berichten.
+#   every: 168h
+
+# ---------------------------------------------------------------------------
 # Abweichungen je Node
 # ---------------------------------------------------------------------------
 #
@@ -367,6 +400,9 @@ advice:
 #     # würde hier jede Woche dasselbe melden.
 #     advice:
 #       backup_coverage: off
+#     # Dieser Node wird enger beobachtet.
+#     report:
+#       every: 24h
 #     pools:
 #       # Gleicher Name, langsamere Platte als auf den anderen Nodes.
 #       local-pool:

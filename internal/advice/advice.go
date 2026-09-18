@@ -47,8 +47,43 @@ type Finding struct {
 	Action string
 }
 
-func (f Finding) String() string {
-	return fmt.Sprintf("%s: %s\n    Warum:  %s\n    Was tun: %s", f.Check, f.Subject, f.Why, f.Action)
+// Findings ist eine Gruppe von Befunden mit derselben Begründung und
+// demselben Handlungsschritt.
+type Findings struct {
+	Check    string
+	Why      string
+	Action   string
+	Subjects []string
+}
+
+// Group fasst zusammen, was zusammengehört. Vier ungesicherte Gäste haben
+// denselben Grund und denselben Handlungsschritt — die Erklärung viermal
+// zu wiederholen macht die Ausgabe länger und schlechter lesbar.
+//
+// Zusammengefasst wird über Grund und Handlungsschritt, nicht nur über die
+// Prüfung: backup_coverage meldet zweierlei, ungesicherte Gäste und
+// verwaiste Einträge auf der Ignore-Liste.
+func Group(findings []Finding) []Findings {
+	index := map[string]int{}
+	var groups []Findings
+
+	for _, finding := range findings {
+		key := finding.Check + "\x00" + finding.Why + "\x00" + finding.Action
+		if at, seen := index[key]; seen {
+			groups[at].Subjects = append(groups[at].Subjects, finding.Subject)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, Findings{
+			Check: finding.Check, Why: finding.Why, Action: finding.Action,
+			Subjects: []string{finding.Subject},
+		})
+	}
+
+	// Feste Reihenfolge — eine Ausgabe, die jedes Mal anders sortiert ist,
+	// lässt sich nicht mit der letzten vergleichen.
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].Check < groups[j].Check })
+	return groups
 }
 
 // Check ist eine einzelne Prüfung.

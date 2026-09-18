@@ -30,7 +30,7 @@ func (c *bandwidthLimits) Run(ctx context.Context, cluster Cluster) ([]Finding, 
 	if len(options.BandwidthLimits) == 0 {
 		return []Finding{{
 			Check:   c.Name(),
-			Subject: "es ist keine einzige bandbreitengrenze gesetzt",
+			Subject: "Es ist keine einzige Bandbreitengrenze gesetzt",
 			Why:     ungebremst,
 			Action:  einstellweg,
 		}}, nil
@@ -47,19 +47,19 @@ func (c *bandwidthLimits) Run(ctx context.Context, cluster Cluster) ([]Finding, 
 	}
 	return []Finding{{
 		Check:   c.Name(),
-		Subject: "ohne bandbreitengrenze: " + strings.Join(offen, ", "),
+		Subject: "Ohne Bandbreitengrenze: " + strings.Join(offen, ", "),
 		Why:     ungebremst,
 		Action:  einstellweg,
 	}}, nil
 }
 
 const (
-	ungebremst = "ein ungebremster vorgang zieht die leitung leer." +
-		" teilt sich der cluster-verkehr dieselbe leitung, kann das corosync abschnüren —" +
-		" im schlimmsten fall verlieren die nodes ihr quorum"
+	ungebremst = "Ein ungebremster Vorgang zieht die Leitung leer." +
+		" Teilt sich der Cluster-Verkehr dieselbe Leitung, kann das Corosync abschnüren —" +
+		" im schlimmsten Fall verlieren die Nodes ihr Quorum."
 	einstellweg = "Rechenzentrum → Optionen → Bandbreitenbegrenzungen." +
-		" achtung bei der einheit: proxmox rechnet dort in KiB/s, nicht in MB/s wie an platten und netzwerkkarten." +
-		" \"default\" deckt alles ab, was keine eigene grenze hat"
+		" Achtung bei der Einheit: Proxmox rechnet dort in KiB/s, nicht in MB/s wie an Platten und Netzwerkkarten." +
+		" \"default\" deckt alles ab, was keine eigene Grenze hat."
 )
 
 // replicationRate nennt Replikationsaufträge ohne Ratenbegrenzung.
@@ -84,11 +84,11 @@ func (c *replicationRate) Run(ctx context.Context, cluster Cluster) ([]Finding, 
 		}
 		findings = append(findings, Finding{
 			Check:   c.Name(),
-			Subject: fmt.Sprintf("replikationsauftrag %s (%s → %s) läuft ungebremst", job.ID, job.Source, job.Target),
-			Why: "nach einer größeren änderung im gast überträgt der auftrag schlagartig viel" +
-				" und nimmt sich, was die leitung hergibt",
-			Action: "Rechenzentrum → Replikation → auftrag bearbeiten → Rate." +
-				" die angabe ist dort MB/s",
+			Subject: fmt.Sprintf("Replikationsauftrag %s (%s → %s) läuft ungebremst", job.ID, job.Source, job.Target),
+			Why: "Nach einer größeren Änderung im Gast überträgt der Auftrag schlagartig viel" +
+				" und nimmt sich, was die Leitung hergibt.",
+			Action: "Rechenzentrum → Replikation → Auftrag bearbeiten → Rate." +
+				" Die Angabe ist dort MB/s.",
 		})
 	}
 	return findings, nil

@@ -49,7 +49,7 @@ einstellen lässt.
 Daneben kann er auf abgestürzte Dienste des Nodes aufpassen und sie wieder
 hochholen — siehe [Dienst-Monitor](#dienst-monitor) — und auf ungünstige
 Einstellungen hinweisen, ohne sie anzufassen — siehe
-[Empfehlungen](#empfehlungen).
+[Empfehlungen](#empfehlungen) und [Regelmäßiger Bericht](#regelmäßiger-bericht).
 
 ## Betriebsarten
 
@@ -361,12 +361,19 @@ pve-optimizer -config /etc/pve-optimizer/config.yaml -check
 ```
 
 ```
-3 Befund(e):
+2 Befund(e):
 
-backup_coverage: VM 3000 (Test-VM) auf pve02
-    Warum:  kein sicherungsauftrag erfasst diesen gast — geht der speicher verloren, ist er weg
-    Was tun: in der oberfläche unter Rechenzentrum → Backup einem auftrag hinzufügen. …
+backup_coverage
+  - VM 3000 (Test-VM) auf pve02
+  - Container 101 (Wegwerf-CT) auf pve03
+
+  Warum:   Kein Sicherungsauftrag erfasst diesen Gast. Geht der Speicher verloren, ist er weg.
+  Was tun: Unter Rechenzentrum → Backup einem Auftrag hinzufügen. Braucht der Gast
+           bewusst keine Sicherung, gehört seine VMID unter advice.backup_coverage.ignore.
 ```
+
+Befunde mit derselben Begründung werden zusammengefasst — vier ungesicherte
+Gäste tragen die Erklärung einmal, nicht viermal.
 
 | Prüfung | Was sie nachsieht | Optionen |
 |---|---|---|
@@ -411,6 +418,50 @@ Fall verlieren die Nodes darüber ihr Quorum. Achtung bei der Einheit:
 Proxmox rechnet unter *Rechenzentrum → Optionen* in **KiB/s**, nicht in
 MB/s wie an Platten und Netzwerkkarten.
 
+### Regelmäßiger Bericht
+
+Die Empfehlungen von Hand aufzurufen hilft nur dem, der daran denkt. Der
+Bericht sieht in festem Abstand selbst nach und meldet sich per Mail:
+
+```yaml
+report:
+  mode: enforce     # off = aus, report = nur ins Protokoll, enforce = Mail
+  node: vmh01       # nur dieser Node verschickt
+  every: 168h       # eine Woche
+```
+
+| Schlüssel | Vorgabe | Bedeutung |
+|---|---|---|
+| `mode` | `off` | `off`, `report` oder `enforce` — wie überall |
+| `node` | — | welcher Node verschickt; **Pflicht**, wenn der Bericht an ist |
+| `every` | `168h` | Abstand zwischen zwei Berichten |
+
+**Warum `node` Pflicht ist:** Läuft der Dienst auf jedem Node, würde ohne
+diese Angabe jede Instanz denselben Bericht verschicken — bei drei Nodes
+also drei gleiche Mails. Fehlt die Angabe bei eingeschaltetem Bericht,
+startet der Dienst nicht und sagt warum.
+
+**Verschickt wird nur, wenn es etwas zu melden gibt.** Eine Mail, die jede
+Woche „alles in Ordnung" sagt, liest nach dem vierten Mal niemand mehr —
+und dann auch die nicht mehr, in der etwas steht.
+
+Der Bericht enthält, was die eingeschalteten [Empfehlungen](#empfehlungen)
+gefunden haben. Wer einen Punkt bewusst so lassen will, schaltet die
+zugehörige Prüfung ab; sie taucht dann auch im Bericht nicht mehr auf. Das
+ist die Lautstärkeregelung.
+
+**Der erste Bericht geht gleich nach dem Einschalten hinaus.** So zeigt
+sich sofort, ob der Mailweg steht — und nicht erst in einer Woche, wenn
+der erste Bericht ausbleibt und niemand weiß, ob das gut oder schlecht
+ist. Der Zeitpunkt des letzten Versands liegt als `report.json` neben dem
+`state_file`, damit ein Update des Dienstes den Rhythmus nicht von vorn
+beginnen lässt.
+
+Zwei Fälle gelten ausdrücklich **nicht** als erledigt und werden beim
+nächsten Durchlauf wiederholt: ein fehlgeschlagener Versand, und ein
+Durchlauf, in dem eine Prüfung nicht laufen konnte. Sonst fiele der
+Bericht dieser Woche aus, weil die API zwei Minuten nicht erreichbar war.
+
 ### Abweichungen je Node
 
 Alles Bisherige gilt clusterweit. Unter `nodes:` steht, was auf einzelnen
@@ -430,6 +481,8 @@ nodes:
       restart_limit: 5    # dieser Node hat eine Vorgeschichte
     advice:
       backup_coverage: off  # hier stehen nur Wegwerf-Gäste
+    report:
+      every: 24h            # dieser Node wird enger beobachtet
     pools:
       local-pool:         # gleicher Name, langsamere Platte
         mbps_wr: 80

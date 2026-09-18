@@ -18,6 +18,7 @@ import (
 	"pve-optimizer/internal/limits"
 	"pve-optimizer/internal/mail"
 	"pve-optimizer/internal/mode"
+	"pve-optimizer/internal/report"
 	"pve-optimizer/internal/rules"
 	"pve-optimizer/internal/services"
 )
@@ -80,6 +81,10 @@ type Config struct {
 	// hinweisen, ohne etwas zu ändern.
 	Advice map[string]yaml.Node `yaml:"advice"`
 
+	// Report verschickt in festem Abstand, was die Prüfungen gefunden
+	// haben.
+	Report yaml.Node `yaml:"report"`
+
 	// Nodes weicht davon ab, je Node. Genannt wird nur, was anders ist.
 	Nodes map[string]NodeSettings `yaml:"nodes"`
 }
@@ -93,6 +98,7 @@ type NodeSettings struct {
 	Services yaml.Node                 `yaml:"services"`
 	Advice   map[string]yaml.Node      `yaml:"advice"`
 	Mail     yaml.Node                 `yaml:"mail"`
+	Report   yaml.Node                 `yaml:"report"`
 }
 
 type API struct {
@@ -197,6 +203,9 @@ func (c *Config) validate() error {
 	if err := c.validateMail(); err != nil {
 		return err
 	}
+	if err := c.validateReport(); err != nil {
+		return err
+	}
 	if c.Mode == ModeAPI {
 		return c.validateAPI()
 	}
@@ -271,6 +280,19 @@ func (c *Config) validateMail() error {
 	}
 	for node := range c.Nodes {
 		if _, err := c.MailFor(node); err != nil {
+			return fmt.Errorf("nodes.%s: %w", node, err)
+		}
+	}
+	return nil
+}
+
+// validateReport baut den Bericht einmal für jeden genannten Node durch.
+func (c *Config) validateReport() error {
+	if _, err := c.ReportFor(""); err != nil {
+		return err
+	}
+	for node := range c.Nodes {
+		if _, err := c.ReportFor(node); err != nil {
 			return fmt.Errorf("nodes.%s: %w", node, err)
 		}
 	}
@@ -414,6 +436,32 @@ func (c *Config) MonitoredNode() string {
 	return c.Host
 }
 
+// ReportFor baut den Bericht für einen Node: die clusterweite
+// Einstellung, darüber die Abweichung dieses Nodes.
+//
+// Ein Probelauf wirkt hier wie überall: dry_run senkt den Bericht auf
+// "report" ab — die Befunde stehen dann im Protokoll, verschickt wird
+// nichts.
+func (c *Config) ReportFor(node string) (report.Settings, error) {
+	settings := report.DefaultSettings()
+	for _, layer := range []yaml.Node{c.Report, c.Nodes[node].Report} {
+		if layer.IsZero() {
+			continue
+		}
+		if err := decodeStrict(layer, &settings); err != nil {
+			return report.Settings{}, fmt.Errorf("report: %w", err)
+		}
+	}
+
+	if c.DryRun && settings.Mode == mode.Enforce {
+		settings.Mode = mode.Report
+	}
+	if err := settings.Check(); err != nil {
+		return report.Settings{}, fmt.Errorf("report: %w", err)
+	}
+	return settings, nil
+}
+
 // MailFor baut den Mailzugang für einen Node: die clusterweite
 // Einstellung, darüber die Abweichung dieses Nodes.
 //
@@ -461,6 +509,11 @@ func hasKey(node yaml.Node, name string) bool {
 // Schlüssel dafür wäre ein Knopf, an dem niemand je drehen will.
 func (c *Config) ServiceStateFile() string {
 	return filepath.Join(filepath.Dir(c.StateFile), "services.json")
+}
+
+// ReportStateFile liegt aus demselben Grund daneben.
+func (c *Config) ReportStateFile() string {
+	return filepath.Join(filepath.Dir(c.StateFile), "report.json")
 }
 
 // decodeStrict liest einen Abschnitt und weist unbekannte Schlüssel ab,

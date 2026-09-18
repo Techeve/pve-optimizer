@@ -11,9 +11,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"pve-optimizer/internal/advice"
 	"pve-optimizer/internal/config"
 	"pve-optimizer/internal/mode"
 	"pve-optimizer/internal/proxmox"
+	"pve-optimizer/internal/report"
 	"pve-optimizer/internal/services"
 	"pve-optimizer/internal/version"
 	"pve-optimizer/internal/watcher"
@@ -69,7 +71,47 @@ func run(configPath string, debug, sweep, check bool) error {
 	if err := startMonitor(ctx, cfg, log); err != nil {
 		return err
 	}
+	if err := startReport(ctx, cfg, client, log); err != nil {
+		return err
+	}
 	return w.Run(ctx)
+}
+
+// startReport stellt den regelmäßigen Bericht daneben, sofern er
+// eingeschaltet ist und dieser Node ihn verschicken soll.
+func startReport(ctx context.Context, cfg *config.Config, client proxmox.Client, log *slog.Logger) error {
+	settings, err := cfg.ReportFor(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+	if settings.Mode == mode.Off {
+		return nil
+	}
+
+	checks, err := cfg.AdviceFor(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+	sender, err := cfg.Sender(cfg.MonitoredNode())
+	if err != nil {
+		return err
+	}
+
+	reporter, err := report.New(
+		settings, cfg.MonitoredNode(), cfg.ReportStateFile(), checks, client, sender, log)
+	if err != nil {
+		return err
+	}
+	if !reporter.Responsible() {
+		// Der Bericht gehört einem anderen Node. Das ist der Normalfall
+		// bei einer Installation je Node und kein Fehler — es soll nur
+		// nicht wie ein vergessener Schalter aussehen.
+		log.Info("bericht übernimmt ein anderer node", "zuständig", settings.Node)
+		return nil
+	}
+
+	go reporter.Run(ctx, cfg.PollInterval)
+	return nil
 }
 
 // runChecks lässt die Empfehlungen einmal laufen und schreibt die Befunde
@@ -91,10 +133,13 @@ func runChecks(ctx context.Context, cfg *config.Config, client proxmox.Client) e
 		return nil
 	}
 
-	fmt.Printf("%d Befund(e):\n\n", len(findings))
-	for _, finding := range findings {
-		fmt.Println(finding)
-		fmt.Println()
+	fmt.Printf("%d Befund(e):\n", len(findings))
+	for _, group := range advice.Group(findings) {
+		fmt.Printf("\n%s\n", group.Check)
+		for _, subject := range group.Subjects {
+			fmt.Printf("  - %s\n", subject)
+		}
+		fmt.Printf("\n  Warum:   %s\n  Was tun: %s\n", group.Why, group.Action)
 	}
 
 	// Befunde sind kein Fehler des Programms: Der Aufruf hat getan, was er

@@ -51,9 +51,9 @@ func (c *backupCoverage) Run(ctx context.Context, cluster Cluster) ([]Finding, e
 		findings = append(findings, Finding{
 			Check:   c.Name(),
 			Subject: describe(guest, nodes[guest.VMID]),
-			Why:     "kein sicherungsauftrag erfasst diesen gast — geht der speicher verloren, ist er weg",
-			Action: "in der oberfläche unter Rechenzentrum → Backup einem auftrag hinzufügen." +
-				" braucht der gast bewusst keine sicherung, gehört seine vmid unter advice.backup_coverage.ignore",
+			Why:     "Kein Sicherungsauftrag erfasst diesen Gast. Geht der Speicher verloren, ist er weg.",
+			Action: "Unter Rechenzentrum → Backup einem Auftrag hinzufügen." +
+				" Braucht der Gast bewusst keine Sicherung, gehört seine VMID unter advice.backup_coverage.ignore.",
 		})
 	}
 	return append(findings, c.staleIgnores(guests)...), nil
@@ -80,10 +80,10 @@ func (c *backupCoverage) staleIgnores(guests []proxmox.Guest) []Finding {
 		}
 		findings = append(findings, Finding{
 			Check:   c.Name(),
-			Subject: fmt.Sprintf("vmid %d steht auf der ignore-liste, es gibt sie aber nicht mehr", vmid),
-			Why: "proxmox vergibt gelöschte nummern wieder — der eintrag würde dann einen" +
-				" neuen gast von der prüfung ausnehmen, ohne dass es jemand bemerkt",
-			Action: "eintrag unter advice.backup_coverage.ignore entfernen",
+			Subject: fmt.Sprintf("VMID %d steht auf der Ignore-Liste, es gibt sie aber nicht mehr", vmid),
+			Why: "Proxmox vergibt gelöschte Nummern wieder. Der Eintrag würde dann einen" +
+				" neuen Gast von der Prüfung ausnehmen, ohne dass es jemand bemerkt.",
+			Action: "Eintrag unter advice.backup_coverage.ignore entfernen.",
 		})
 	}
 	return findings

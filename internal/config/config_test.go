@@ -530,3 +530,107 @@ func TestProbelaufLaesstEmpfehlungenUnberuehrt(t *testing.T) {
 		}
 	}
 }
+
+func TestBerichtVorgabeAus(t *testing.T) {
+	path := writeConfig(t, "defaults:\n  mbps_rd: 200\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	settings, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor() = %v", err)
+	}
+	if settings.Mode != mode.Off {
+		t.Errorf("Mode = %q, erwartet %q", settings.Mode, mode.Off)
+	}
+	if settings.Every != 7*24*time.Hour {
+		t.Errorf("Every = %s, erwartet eine Woche", settings.Every)
+	}
+}
+
+func TestBerichtJeNode(t *testing.T) {
+	path := writeConfig(t, `
+defaults:
+  mbps_rd: 200
+mail:
+  to: admin@example.com
+  server: mail.example.com:25
+report:
+  mode: enforce
+  node: vmh01
+  every: 168h
+nodes:
+  vmh03:
+    report:
+      every: 24h
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	allgemein, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor(vmh01) = %v", err)
+	}
+	if allgemein.Every != 168*time.Hour || allgemein.Node != "vmh01" {
+		t.Errorf("vmh01: Every = %s, Node = %q", allgemein.Every, allgemein.Node)
+	}
+
+	abweichend, err := cfg.ReportFor("vmh03")
+	if err != nil {
+		t.Fatalf("ReportFor(vmh03) = %v", err)
+	}
+	if abweichend.Every != 24*time.Hour {
+		t.Errorf("vmh03: Every = %s, erwartet 24h vom Node", abweichend.Every)
+	}
+	// Was der Node nicht nennt, bleibt so, wie es clusterweit steht.
+	if abweichend.Mode != mode.Enforce || abweichend.Node != "vmh01" {
+		t.Errorf("vmh03: Mode = %q, Node = %q, erwartet die clusterweite Einstellung",
+			abweichend.Mode, abweichend.Node)
+	}
+}
+
+func TestBerichtImProbelauf(t *testing.T) {
+	path := writeConfig(t, `
+dry_run: true
+defaults:
+  mbps_rd: 200
+report:
+  mode: enforce
+  node: vmh01
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	settings, err := cfg.ReportFor("vmh01")
+	if err != nil {
+		t.Fatalf("ReportFor() = %v", err)
+	}
+	if settings.Mode != mode.Report {
+		t.Errorf("Mode = %q, erwartet %q — dry_run senkt auch den Bericht ab", settings.Mode, mode.Report)
+	}
+}
+
+func TestBerichtOhneNodeWirdAbgewiesen(t *testing.T) {
+	// Ohne zuständigen Node verschickt jede Instanz denselben Bericht.
+	tests := map[string]string{
+		"ohne node":             "report:\n  mode: enforce\n",
+		"abstand zu kurz":       "report:\n  mode: enforce\n  node: vmh01\n  every: 30s\n",
+		"unbekannter schlüssel": "report:\n  mode: enforce\n  node: vmh01\n  wöchentlich: true\n",
+	}
+
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, "defaults:\n  mbps_rd: 200\n"+block)
+			if _, err := Load(path); err == nil {
+				t.Fatal("Load() nahm die Konfiguration an")
+			}
+		})
+	}
+}

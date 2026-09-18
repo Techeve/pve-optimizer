@@ -257,3 +257,31 @@ func (c *fehlerhafterCluster) Options(context.Context) (proxmox.Options, error) 
 func (c *fehlerhafterCluster) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
 	return c.jobs, nil
 }
+
+func TestBefundeWerdenZusammengefasst(t *testing.T) {
+	// Vier Gäste mit demselben Grund sollen die Erklärung einmal tragen,
+	// nicht viermal.
+	findings := []Finding{
+		{Check: "backup_coverage", Subject: "VM 1", Why: "kein backup", Action: "hinzufügen"},
+		{Check: "replication_rate", Subject: "Job A", Why: "ungebremst", Action: "rate setzen"},
+		{Check: "backup_coverage", Subject: "VM 2", Why: "kein backup", Action: "hinzufügen"},
+		// Dieselbe Prüfung, aber ein anderer Grund — bleibt getrennt.
+		{Check: "backup_coverage", Subject: "VMID 999", Why: "verwaist", Action: "entfernen"},
+	}
+
+	groups := Group(findings)
+	if len(groups) != 3 {
+		t.Fatalf("Gruppen = %d, erwartet 3", len(groups))
+	}
+
+	// Feste Reihenfolge, damit sich zwei Berichte vergleichen lassen.
+	if groups[0].Check != "backup_coverage" || groups[2].Check != "replication_rate" {
+		t.Errorf("Reihenfolge = %q, %q, %q", groups[0].Check, groups[1].Check, groups[2].Check)
+	}
+	if len(groups[0].Subjects) != 2 {
+		t.Errorf("erste Gruppe = %v, erwartet die beiden VMs", groups[0].Subjects)
+	}
+	if len(groups[1].Subjects) != 1 || groups[1].Why != "verwaist" {
+		t.Errorf("zweite Gruppe = %+v, erwartet den verwaisten Eintrag allein", groups[1])
+	}
+}
