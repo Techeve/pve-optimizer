@@ -33,7 +33,52 @@ type Client interface {
 	// UpdateGuestConfig schreibt die übergebenen Felder in die
 	// Konfiguration des Gastes.
 	UpdateGuestConfig(ctx context.Context, node string, kind Kind, vmid int, fields map[string]string) error
+	// NotBackedUp liefert die Gäste, die kein Sicherungsauftrag erfasst.
+	NotBackedUp(ctx context.Context) ([]Guest, error)
+	// Options liefert die Rechenzentrums-Einstellungen.
+	Options(ctx context.Context) (Options, error)
+	// ReplicationJobs liefert die Replikationsaufträge des Clusters.
+	ReplicationJobs(ctx context.Context) ([]ReplicationJob, error)
 }
+
+// Options sind die Rechenzentrums-Einstellungen (datacenter.cfg).
+type Options struct {
+	// BandwidthLimits sind die Grenzen aus "bwlimit". Der Wert bleibt roh,
+	// weil die Prüfung nur wissen muss, ob eine Grenze gesetzt ist —
+	// Proxmox liefert je nach Fassung Zahl oder Zeichenkette.
+	//
+	// Achtung bei der Einheit: "bwlimit" rechnet in KiB/s, während der
+	// Durchsatz an Platten und Netzwerkkarten in MB/s angegeben wird.
+	BandwidthLimits map[string]json.RawMessage `json:"bwlimit"`
+}
+
+// BandwidthOperations sind die Vorgänge, für die Proxmox eine Grenze
+// kennt. "default" gilt für alles, was keine eigene Grenze hat.
+var BandwidthOperations = []string{"restore", "migration", "move", "clone"}
+
+// HasBandwidthLimit meldet, ob für einen Vorgang eine Grenze greift —
+// entweder seine eigene oder die allgemeine.
+func (o Options) HasBandwidthLimit(operation string) bool {
+	if len(o.BandwidthLimits[operation]) > 0 {
+		return true
+	}
+	return len(o.BandwidthLimits["default"]) > 0
+}
+
+// ReplicationJob ist ein Replikationsauftrag des Clusters.
+type ReplicationJob struct {
+	ID     string `json:"id"`
+	Guest  int    `json:"guest"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	// Schedule bleibt leer, wenn der Auftrag die Vorgabe nutzt.
+	Schedule string `json:"schedule"`
+	// Rate fehlt, wenn der Auftrag ungebremst läuft.
+	Rate json.RawMessage `json:"rate"`
+}
+
+// Limited meldet, ob der Auftrag eine Ratenbegrenzung trägt.
+func (j ReplicationJob) Limited() bool { return len(j.Rate) > 0 }
 
 // Guest ist ein Gast aus der Ressourcenliste des Clusters.
 type Guest struct {
