@@ -14,14 +14,23 @@ vendor: "Techeve"
 homepage: "https://gitlab.techeve.de/techeve/pve-optimizer"
 license: "proprietary"
 description: |
-  pve-optimizer - fills in what Proxmox VE leaves open on new VMs.
-  Watches the cluster task list and, once a VM has been created, cloned or
-  restored, applies a set of rules to it: IO limits per storage pool,
-  discard, the SSD flag, an IO thread per disk, the guest agent and
-  staggered start-up delays. Every rule has a mode of its own - off, report
-  (log only) or enforce - and can be overridden per node. Existing values
-  are never overwritten. Single CGO-free Go binary running as a systemd
-  service. Configuration in /etc/pve-optimizer.
+  pve-optimizer - fills in what Proxmox VE leaves open, and points out what
+  it cannot fix for you.
+  Watches the cluster task list and, once a guest has been created, cloned
+  or restored, applies a set of rules to it: IO limits per storage pool,
+  discard, the SSD flag, an IO thread per disk, the guest agent, staggered
+  start-up delays and a bandwidth limit per network interface. Every rule
+  has a mode of its own - off, report (log only) or enforce - and can be
+  overridden per node. Existing values are never overwritten.
+  It can also restart crashed Proxmox services such as pvestatd, which ship
+  without a systemd Restart= of their own, and give up after a configurable
+  number of attempts rather than looping forever.
+  Separately, a set of advisory checks reports what only a human should
+  decide: guests no backup job covers, missing datacenter bandwidth limits,
+  replication jobs without a rate limit. These never change anything; an
+  optional periodic mail reports what they found.
+  Interactive setup via "pve-optimizer -wizard". Single CGO-free Go binary
+  running as a systemd service. Configuration in /etc/pve-optimizer.
 
 contents:
   # Das arch-passende Binary wird vor dem Packen auf diesen festen Namen
