@@ -325,6 +325,31 @@ advice:
   # sich, was die Leitung hergibt. Die Rate wird dort in MB/s angegeben.
   replication_rate: report
 
+  # ZFS-Pools mit Fehlerzählern oder gestörten Geräten.
+  #
+  # Auf einem Node ohne ECC-Speicher ist das oft das einzige Warnsignal,
+  # das überhaupt kommt: ZFS prüft jeden gelesenen Block gegen seine
+  # Prüfsumme und merkt Verfälschungen, die weder SMART noch die
+  # Machine-Check-Zähler je sehen.
+  #
+  # Zeigen MEHRERE Pools eines Nodes Fehler, meldet die Prüfung das
+  # eigens — zwei unabhängige Laufwerke fangen nicht gleichzeitig an,
+  # Daten zu verfälschen. Dann liegt die Ursache oberhalb der Laufwerke.
+  zfs_health: report
+
+  # Pools, die einen Ausfall nicht ausgleichen können. Ohne zweite Kopie
+  # erkennt ZFS einen Prüfsummenfehler zwar, kann ihn aber nicht beheben.
+  # Nachrüsten geht nicht — bleibt Sicherung und regelmäßiger Scrub.
+  zfs_redundancy: report
+
+  # Nodes, deren laufende Gäste zusammen mehr Speicher zugesagt bekommen
+  # haben, als dem Host bleibt. Gezählt werden nur laufende Gäste;
+  # gestoppte und Vorlagen belegen nichts.
+  memory_overcommit:
+    mode: report
+    # Ab welchem Anteil des Hauptspeichers gemeldet wird.
+    max_percent: 85
+
 # ---------------------------------------------------------------------------
 # Regelmäßiger Bericht
 # ---------------------------------------------------------------------------

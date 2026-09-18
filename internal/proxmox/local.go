@@ -137,3 +137,39 @@ func (c *LocalClient) Storages(ctx context.Context) ([]Storage, error) {
 	}
 	return storages, nil
 }
+
+func (c *LocalClient) Nodes(ctx context.Context) ([]Node, error) {
+	output, err := c.run(ctx, "get", "/nodes")
+	if err != nil {
+		return nil, fmt.Errorf("nodes abrufen: %w", err)
+	}
+	var nodes []Node
+	if err := json.Unmarshal(output, &nodes); err != nil {
+		return nil, fmt.Errorf("nodes auswerten: %w", err)
+	}
+	return nodes, nil
+}
+
+func (c *LocalClient) ZFSPools(ctx context.Context, node string) ([]ZFSPool, error) {
+	output, err := c.run(ctx, "get", "/nodes/"+node+"/disks/zfs")
+	if err != nil {
+		return nil, fmt.Errorf("zfs-pools von %s abrufen: %w", node, err)
+	}
+	var pools []ZFSPool
+	if err := json.Unmarshal(output, &pools); err != nil {
+		return nil, fmt.Errorf("zfs-pools von %s auswerten: %w", node, err)
+	}
+	return pools, nil
+}
+
+func (c *LocalClient) ZFSPoolStatus(ctx context.Context, node, pool string) (ZFSStatus, error) {
+	output, err := c.run(ctx, "get", "/nodes/"+node+"/disks/zfs/"+pool)
+	if err != nil {
+		return ZFSStatus{}, fmt.Errorf("zustand von %s auf %s abrufen: %w", pool, node, err)
+	}
+	var status ZFSStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		return ZFSStatus{}, fmt.Errorf("zustand von %s auf %s auswerten: %w", pool, node, err)
+	}
+	return status, nil
+}

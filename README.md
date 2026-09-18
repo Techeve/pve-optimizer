@@ -415,6 +415,9 @@ Gäste tragen die Erklärung einmal, nicht viermal.
 | `backup_coverage` | Gäste, die kein Sicherungsauftrag erfasst | `ignore` |
 | `bandwidth_limits` | fehlende Bandbreitengrenzen des Rechenzentrums | — |
 | `replication_rate` | Replikationsaufträge ohne Ratenbegrenzung | — |
+| `zfs_health` | Pools mit Fehlerzählern oder gestörten Geräten | — |
+| `zfs_redundancy` | Pools, die einen Ausfall nicht ausgleichen können | — |
+| `memory_overcommit` | Nodes, deren Gäste mehr Speicher zugesagt haben als da ist | `max_percent` |
 
 ```yaml
 advice:
@@ -445,6 +448,37 @@ Prüfung meldet dabei auch **verwaiste Einträge** — Nummern auf der Liste,
 zu denen es keinen Gast mehr gibt. Proxmox vergibt gelöschte VMIDs wieder,
 und ein alter Eintrag würde sonst irgendwann stillschweigend einen neuen
 Gast von der Prüfung ausnehmen.
+
+**Zu `zfs_health`:** Auf einem Node ohne ECC-Speicher ist ZFS oft das
+einzige Warnsignal, das überhaupt kommt. Es prüft jeden gelesenen Block
+gegen seine Prüfsumme und merkt damit Verfälschungen, die weder SMART noch
+die Machine-Check-Zähler je sehen.
+
+Einen Befund gibt es deshalb zusätzlich: Zeigen **mehrere Pools** eines
+Nodes Fehlerzähler, meldet die Prüfung das eigens. Zwei unabhängige
+Laufwerke fangen nicht gleichzeitig an, Daten zu verfälschen — dann liegt
+die Ursache oberhalb der Laufwerke, im Arbeitsspeicher, im
+Speichercontroller oder auf dem PCIe-Pfad. Melden die Laufwerke dazu null
+Medienfehler, sind sie wahrscheinlich unschuldig. Ein memtest findet so
+etwas oft **nicht**, weil er den Speichercontroller unter gemischter Last
+nicht nachbildet.
+
+**Zu `zfs_redundancy`:** Ohne zweite Kopie erkennt ZFS einen
+Prüfsummenfehler zwar, kann ihn aber nicht beheben — die Datei ist dann
+verloren. Nachrüsten lässt sich das nicht, ein Pool wächst nicht zum
+Spiegel. Der Hinweis zielt deshalb auf das, was bleibt: Sicherung und
+regelmäßiger Scrub, damit ein Fehler auffällt, solange die Sicherung noch
+gut ist.
+
+Ein Node, der **offline** steht, wird bei beiden ZFS-Prüfungen
+übersprungen. Ihn als gesund zu melden wäre falsch, ihn als gestört zu
+melden auch — es ist schlicht nichts bekannt.
+
+**Zu `memory_overcommit`:** Gezählt werden die **laufenden** Gäste;
+gestoppte und Vorlagen belegen nichts. Der Host braucht selbst Speicher —
+ZFS für seinen Lesezwischenspeicher, eine Sicherung für ihre Puffer, der
+Kernel ohnehin. Die Grenze steht auf 85 % und lässt sich über
+`max_percent` verschieben.
 
 **Zu `bandwidth_limits`:** Ein ungebremster Vorgang zieht die Leitung leer.
 Das trifft nicht nur die Gäste — teilt sich der Cluster-Verkehr dieselbe

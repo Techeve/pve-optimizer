@@ -31,6 +31,9 @@ type Cluster interface {
 	NotBackedUp(ctx context.Context) ([]proxmox.Guest, error)
 	Options(ctx context.Context) (proxmox.Options, error)
 	ReplicationJobs(ctx context.Context) ([]proxmox.ReplicationJob, error)
+	Nodes(ctx context.Context) ([]proxmox.Node, error)
+	ZFSPools(ctx context.Context, node string) ([]proxmox.ZFSPool, error)
+	ZFSPoolStatus(ctx context.Context, node, pool string) (proxmox.ZFSStatus, error)
 }
 
 // Finding ist ein einzelner Befund. Drei Felder, und alle drei sind Pflicht:
@@ -128,6 +131,11 @@ var catalog = []func() Check{
 	func() Check { return &backupCoverage{Base: Base{name: "backup_coverage", CheckMode: mode.Report}} },
 	func() Check { return &bandwidthLimits{Base: Base{name: "bandwidth_limits", CheckMode: mode.Report}} },
 	func() Check { return &replicationRate{Base: Base{name: "replication_rate", CheckMode: mode.Report}} },
+	func() Check { return &zfsHealth{Base: Base{name: "zfs_health", CheckMode: mode.Report}} },
+	func() Check { return &zfsRedundancy{Base: Base{name: "zfs_redundancy", CheckMode: mode.Report}} },
+	func() Check {
+		return &memoryOvercommit{Base: Base{name: "memory_overcommit", CheckMode: mode.Report}, MaxPercent: 85}
+	},
 }
 
 // Names sind alle Prüfnamen in der Reihenfolge des Katalogs.

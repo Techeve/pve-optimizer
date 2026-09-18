@@ -19,6 +19,9 @@ type fakeCluster struct {
 	offen   []proxmox.Guest
 	options proxmox.Options
 	jobs    []proxmox.ReplicationJob
+	nodes   []proxmox.Node
+	pools   map[string][]proxmox.ZFSPool
+	zustand map[string]proxmox.ZFSStatus
 	fehler  error
 }
 
@@ -33,6 +36,15 @@ func (f *fakeCluster) Options(context.Context) (proxmox.Options, error) {
 }
 func (f *fakeCluster) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
 	return f.jobs, f.fehler
+}
+func (f *fakeCluster) Nodes(context.Context) ([]proxmox.Node, error) {
+	return f.nodes, f.fehler
+}
+func (f *fakeCluster) ZFSPools(_ context.Context, node string) ([]proxmox.ZFSPool, error) {
+	return f.pools[node], f.fehler
+}
+func (f *fakeCluster) ZFSPoolStatus(_ context.Context, node, pool string) (proxmox.ZFSStatus, error) {
+	return f.zustand[node+"/"+pool], f.fehler
 }
 
 func settings(t *testing.T, text string) map[string]yaml.Node {
@@ -218,7 +230,13 @@ func TestReplikationOhneRate(t *testing.T) {
 }
 
 func TestAusgeschaltetePruefungLaeuftNicht(t *testing.T) {
-	set := build(t, "backup_coverage: off\nbandwidth_limits: off\nreplication_rate: off\n", "")
+	// Über Names() statt über eine handgeschriebene Liste: Sonst
+	// vergisst der Test die nächste neue Prüfung stillschweigend.
+	var alleAus strings.Builder
+	for _, name := range Names() {
+		alleAus.WriteString(name + ": off\n")
+	}
+	set := build(t, alleAus.String(), "")
 	findings, problems := set.Run(context.Background(), &fakeCluster{fehler: errors.New("API weg")})
 
 	if len(findings) != 0 || len(problems) != 0 {
@@ -231,12 +249,13 @@ func TestEinScheiterndePruefungHaeltDieUebrigenNichtAuf(t *testing.T) {
 	// Befund daraus muss trotzdem herauskommen.
 	cluster := &fehlerhafterCluster{jobs: []proxmox.ReplicationJob{{ID: "100-0"}}}
 
-	findings, problems := build(t, "", "").Run(context.Background(), cluster)
+	set := build(t, "", "")
+	findings, problems := set.Run(context.Background(), cluster)
 	if len(findings) != 1 {
 		t.Errorf("Befunde = %+v, erwartet den einen aus der Replikation", findings)
 	}
-	if len(problems) != 2 {
-		t.Errorf("Probleme = %d, erwartet 2 gescheiterte Prüfungen", len(problems))
+	if len(problems) != len(set)-1 {
+		t.Errorf("Probleme = %d, erwartet %d — alle außer der Replikation", len(problems), len(set)-1)
 	}
 }
 
@@ -256,6 +275,15 @@ func (c *fehlerhafterCluster) Options(context.Context) (proxmox.Options, error) 
 }
 func (c *fehlerhafterCluster) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
 	return c.jobs, nil
+}
+func (c *fehlerhafterCluster) Nodes(context.Context) ([]proxmox.Node, error) {
+	return nil, errors.New("API weg")
+}
+func (c *fehlerhafterCluster) ZFSPools(context.Context, string) ([]proxmox.ZFSPool, error) {
+	return nil, errors.New("API weg")
+}
+func (c *fehlerhafterCluster) ZFSPoolStatus(context.Context, string, string) (proxmox.ZFSStatus, error) {
+	return proxmox.ZFSStatus{}, errors.New("API weg")
 }
 
 func TestBefundeWerdenZusammengefasst(t *testing.T) {
@@ -283,5 +311,135 @@ func TestBefundeWerdenZusammengefasst(t *testing.T) {
 	}
 	if len(groups[1].Subjects) != 1 || groups[1].Why != "verwaist" {
 		t.Errorf("zweite Gruppe = %+v, erwartet den verwaisten Eintrag allein", groups[1])
+	}
+}
+
+func zfsCluster(nodes []proxmox.Node, pools map[string][]proxmox.ZFSPool, zustand map[string]proxmox.ZFSStatus) *fakeCluster {
+	return &fakeCluster{nodes: nodes, pools: pools, zustand: zustand}
+}
+
+func platte(name string, read, write, cksum int64) proxmox.ZFSVdev {
+	return proxmox.ZFSVdev{Name: name, State: "ONLINE", Leaf: 1, Read: read, Write: write, Cksum: cksum}
+}
+
+// gesund baut den Zustand eines Pools ohne Redundanz und ohne Fehler.
+func gesund(name string) proxmox.ZFSStatus {
+	return proxmox.ZFSStatus{
+		Name: name, State: "ONLINE", Errors: "No known data errors",
+		Children: []proxmox.ZFSVdev{{Name: name, Children: []proxmox.ZFSVdev{platte("nvme0n1", 0, 0, 0)}}},
+	}
+}
+
+func TestZfsFehlerWerdenGemeldet(t *testing.T) {
+	krank := gesund("rpool")
+	krank.Children[0].Children[0] = platte("nvme0n1", 0, 0, 67)
+
+	cluster := zfsCluster(
+		[]proxmox.Node{{Name: "pve01", Status: "online"}},
+		map[string][]proxmox.ZFSPool{"pve01": {{Name: "rpool"}}},
+		map[string]proxmox.ZFSStatus{"pve01/rpool": krank},
+	)
+
+	findings := run(t, build(t, "", ""), "zfs_health", cluster)
+	if len(findings) != 1 {
+		t.Fatalf("Befunde = %+v, erwartet 1", findings)
+	}
+	if !strings.Contains(findings[0].Subject, "67") {
+		t.Errorf("Subject = %q, erwartet den Fehlerzähler", findings[0].Subject)
+	}
+}
+
+// Der Querbefund: Zwei unabhängige Laufwerke fangen nicht gleichzeitig an,
+// Daten zu verfälschen — dann liegt die Ursache oberhalb der Laufwerke.
+func TestFehlerAufMehrerenPoolsDeutetAufDenNode(t *testing.T) {
+	eins := gesund("rpool")
+	eins.Children[0].Children[0] = platte("nvme0n1", 0, 0, 2)
+	zwei := gesund("local-pool")
+	zwei.Children[0].Children[0] = platte("nvme1n1", 0, 0, 67)
+
+	cluster := zfsCluster(
+		[]proxmox.Node{{Name: "pve01", Status: "online"}},
+		map[string][]proxmox.ZFSPool{"pve01": {{Name: "rpool"}, {Name: "local-pool"}}},
+		map[string]proxmox.ZFSStatus{"pve01/rpool": eins, "pve01/local-pool": zwei},
+	)
+
+	findings := run(t, build(t, "", ""), "zfs_health", cluster)
+	if len(findings) != 3 {
+		t.Fatalf("Befunde = %d, erwartet 2 Pools + 1 Querbefund", len(findings))
+	}
+	quer := findings[len(findings)-1]
+	if !strings.Contains(quer.Why, "oberhalb der Laufwerke") {
+		t.Errorf("der Querbefund fehlt: %+v", quer)
+	}
+}
+
+func TestOfflineNodeWirdUebersprungen(t *testing.T) {
+	// Weder als gesund noch als kaputt melden — es ist schlicht nichts bekannt.
+	cluster := zfsCluster([]proxmox.Node{{Name: "pve03", Status: "offline"}}, nil, nil)
+
+	if findings := run(t, build(t, "", ""), "zfs_health", cluster); len(findings) != 0 {
+		t.Fatalf("Befunde = %+v, erwartet keine", findings)
+	}
+}
+
+func TestRedundanz(t *testing.T) {
+	gespiegelt := proxmox.ZFSStatus{
+		Name: "rpool", State: "ONLINE", Errors: "No known data errors",
+		Children: []proxmox.ZFSVdev{{Name: "rpool", Children: []proxmox.ZFSVdev{
+			{Name: "mirror-0", Children: []proxmox.ZFSVdev{platte("a", 0, 0, 0), platte("b", 0, 0, 0)}},
+		}}},
+	}
+
+	tests := map[string]struct {
+		status  proxmox.ZFSStatus
+		befunde int
+	}{
+		"einzelne Platte": {gesund("rpool"), 1},
+		"Spiegel":         {gespiegelt, 0},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			cluster := zfsCluster(
+				[]proxmox.Node{{Name: "pve01", Status: "online"}},
+				map[string][]proxmox.ZFSPool{"pve01": {{Name: "rpool"}}},
+				map[string]proxmox.ZFSStatus{"pve01/rpool": test.status},
+			)
+			findings := run(t, build(t, "", ""), "zfs_redundancy", cluster)
+			if len(findings) != test.befunde {
+				t.Fatalf("Befunde = %d, erwartet %d", len(findings), test.befunde)
+			}
+		})
+	}
+}
+
+func TestSpeicherUeberbuchung(t *testing.T) {
+	const gib = int64(1024 * 1024 * 1024)
+
+	cluster := &fakeCluster{
+		nodes: []proxmox.Node{
+			{Name: "pve01", Status: "online", MaxMem: 64 * gib},
+			{Name: "pve02", Status: "online", MaxMem: 64 * gib},
+		},
+		guests: []proxmox.Guest{
+			{VMID: 100, Node: "pve01", MaxMem: 60 * gib, Status: "running"},
+			// Gestoppte Gäste und Vorlagen belegen nichts.
+			{VMID: 101, Node: "pve02", MaxMem: 60 * gib, Status: "stopped"},
+			{VMID: 102, Node: "pve02", MaxMem: 60 * gib, Status: "running", Template: 1},
+		},
+	}
+
+	findings := run(t, build(t, "", ""), "memory_overcommit", cluster)
+	if len(findings) != 1 {
+		t.Fatalf("Befunde = %+v, erwartet nur pve01", findings)
+	}
+	if !strings.Contains(findings[0].Subject, "pve01") || !strings.Contains(findings[0].Subject, "93 %") {
+		t.Errorf("Subject = %q, erwartet pve01 mit Anteil", findings[0].Subject)
+	}
+}
+
+func TestUnsinnigeGrenzeWirdAbgewiesen(t *testing.T) {
+	if _, err := Build(settings(t, "memory_overcommit:\n  max_percent: 0\n"), nil); err == nil {
+		t.Fatal("Build() nahm eine Grenze von 0 an")
 	}
 }
