@@ -125,3 +125,15 @@ func (c *LocalClient) ReplicationJobs(ctx context.Context) ([]ReplicationJob, er
 	}
 	return jobs, nil
 }
+
+func (c *LocalClient) Storages(ctx context.Context) ([]Storage, error) {
+	output, err := c.run(ctx, "get", "/storage")
+	if err != nil {
+		return nil, fmt.Errorf("speicher abrufen: %w", err)
+	}
+	var storages []Storage
+	if err := json.Unmarshal(output, &storages); err != nil {
+		return nil, fmt.Errorf("speicher auswerten: %w", err)
+	}
+	return storages, nil
+}

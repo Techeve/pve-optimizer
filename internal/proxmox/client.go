@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // Kind ist die Gastart. Proxmox führt VMs und Container getrennt: Die
@@ -39,6 +40,30 @@ type Client interface {
 	Options(ctx context.Context) (Options, error)
 	// ReplicationJobs liefert die Replikationsaufträge des Clusters.
 	ReplicationJobs(ctx context.Context) ([]ReplicationJob, error)
+	// Storages liefert die eingerichteten Speicher.
+	Storages(ctx context.Context) ([]Storage, error)
+}
+
+// Storage ist ein eingerichteter Speicher.
+type Storage struct {
+	Name string `json:"storage"`
+	Type string `json:"type"`
+	// Content nennt, was der Speicher aufnimmt, durch Komma getrennt —
+	// etwa "images,rootdir" oder "backup,snippets".
+	Content string `json:"content"`
+}
+
+// HoldsGuests meldet, ob auf dem Speicher Gastplatten liegen können. Nur
+// die sind für die Drosselung interessant; ein Speicher für ISO-Abbilder
+// oder Sicherungen braucht kein Profil.
+func (s Storage) HoldsGuests() bool {
+	for _, kind := range strings.Split(s.Content, ",") {
+		switch strings.TrimSpace(kind) {
+		case "images", "rootdir":
+			return true
+		}
+	}
+	return false
 }
 
 // Options sind die Rechenzentrums-Einstellungen (datacenter.cfg).

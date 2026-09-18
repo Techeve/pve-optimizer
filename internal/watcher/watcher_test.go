@@ -36,6 +36,7 @@ func (f *fakeClient) Options(context.Context) (proxmox.Options, error) {
 func (f *fakeClient) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob, error) {
 	return nil, nil
 }
+func (f *fakeClient) Storages(context.Context) ([]proxmox.Storage, error) { return nil, nil }
 
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
