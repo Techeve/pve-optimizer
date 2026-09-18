@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.0 — 2026-09-18
+
+### 🚀 Features
+
+- **proxmox**: speicherliste abrufen (f72192b4)
+- wizard fuer die ersteinrichtung (f8e6ad7b)
+
+### 🔧 Sonstiges
+
+- **release**: v0.6.0 — VERSION & Changelog aktualisiert [skip ci] (6944be25)
+- wizard beschreiben, paketbeschreibung nachziehen (65e359d3)
+
 ## v0.6.0 — 2026-09-18
 
 ### 🚀 Features
