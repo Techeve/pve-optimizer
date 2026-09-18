@@ -144,3 +144,27 @@ func (c *APIClient) Storages(ctx context.Context) ([]Storage, error) {
 	}
 	return storages, nil
 }
+
+func (c *APIClient) Nodes(ctx context.Context) ([]Node, error) {
+	var nodes []Node
+	if err := c.request(ctx, http.MethodGet, "/nodes", nil, &nodes); err != nil {
+		return nil, fmt.Errorf("nodes abrufen: %w", err)
+	}
+	return nodes, nil
+}
+
+func (c *APIClient) ZFSPools(ctx context.Context, node string) ([]ZFSPool, error) {
+	var pools []ZFSPool
+	if err := c.request(ctx, http.MethodGet, "/nodes/"+node+"/disks/zfs", nil, &pools); err != nil {
+		return nil, fmt.Errorf("zfs-pools von %s abrufen: %w", node, err)
+	}
+	return pools, nil
+}
+
+func (c *APIClient) ZFSPoolStatus(ctx context.Context, node, pool string) (ZFSStatus, error) {
+	var status ZFSStatus
+	if err := c.request(ctx, http.MethodGet, "/nodes/"+node+"/disks/zfs/"+pool, nil, &status); err != nil {
+		return ZFSStatus{}, fmt.Errorf("zustand von %s auf %s abrufen: %w", pool, node, err)
+	}
+	return status, nil
+}

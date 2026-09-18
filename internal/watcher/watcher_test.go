@@ -37,6 +37,13 @@ func (f *fakeClient) ReplicationJobs(context.Context) ([]proxmox.ReplicationJob,
 	return nil, nil
 }
 func (f *fakeClient) Storages(context.Context) ([]proxmox.Storage, error) { return nil, nil }
+func (f *fakeClient) Nodes(context.Context) ([]proxmox.Node, error)       { return nil, nil }
+func (f *fakeClient) ZFSPools(context.Context, string) ([]proxmox.ZFSPool, error) {
+	return nil, nil
+}
+func (f *fakeClient) ZFSPoolStatus(context.Context, string, string) (proxmox.ZFSStatus, error) {
+	return proxmox.ZFSStatus{}, nil
+}
 
 func (f *fakeClient) RecentTasks(context.Context) ([]proxmox.Task, error) {
 	return f.tasks, nil
