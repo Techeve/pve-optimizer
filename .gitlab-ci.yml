@@ -168,9 +168,9 @@ packages:deb:
     - DEB_VERSION=$(echo "$APP_VERSION" | tr '-' '~')
     - echo "Paketiere ${APP_VERSION} — Debian-Version ${DEB_VERSION}"
     - cp "bin/pve-optimizer-linux-amd64" bin/pve-optimizer-pkg
-    - PVE_OPTIMIZER_ARCH="amd64" PVE_OPTIMIZER_VERSION="$DEB_VERSION" \
-        go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
-        --config packaging/nfpm.yaml --packager deb --target bin/
+    - export PVE_OPTIMIZER_ARCH="amd64"
+    - export PVE_OPTIMIZER_VERSION="$DEB_VERSION"
+    - go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package --config packaging/nfpm.yaml --packager deb --target bin/
     - rm -f bin/pve-optimizer-pkg
     - ls -lh bin/*.deb
   artifacts:
