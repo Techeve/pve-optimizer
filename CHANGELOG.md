@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.8.0 — 2026-09-18
+
+### 🚀 Features
+
+- **proxmox**: nodes und zfs-zustand abrufen (30c13c66)
+- hardware-empfehlungen (5b679c75)
+
+### 🔧 Sonstiges
+
+- **release**: v0.7.0 — VERSION & Changelog aktualisiert [skip ci] (49d6e458)
+- hardware-empfehlungen beschreiben (64eb30f3)
+
 ## v0.7.0 — 2026-09-18
 
 ### 🚀 Features

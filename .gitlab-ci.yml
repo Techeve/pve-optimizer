@@ -123,17 +123,18 @@ version:
     paths: [changelog-snippet.md]
     expire_in: 1 week
 
-# Nur Linux: Der Dienst läuft auf Proxmox-Nodes bzw. daneben im Netz.
+# Nur Linux (amd64): Der Dienst läuft auf Proxmox-Nodes (Debian x86_64).
 binaries:
   stage: build
   image: $GO_IMAGE
   cache: *go-cache
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
   needs:
     - backend
     - lint
     - govulncheck
-    - job: version
-      optional: true
+    - version
   script:
     - APP_VERSION=${NEXT_VERSION:-$(cat VERSION)}
     - echo "Baue Version ${APP_VERSION} (Build ${CI_PIPELINE_IID})"
@@ -143,36 +144,33 @@ binaries:
         -X pve-optimizer/internal/version.BuiltAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     - mkdir -p bin
     - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o bin/pve-optimizer-linux-amd64 ./cmd/pve-optimizer
-    - GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$LDFLAGS" -o bin/pve-optimizer-linux-arm64 ./cmd/pve-optimizer
     - ls -lh bin/
   artifacts:
     paths: [bin/]
     expire_in: 1 month
 
-# Baut installierbare Debian-Pakete (.deb) mit systemd-Dienst für amd64 und
-# arm64 aus den zuvor cross-kompilierten Binaries (via nfpm). Proxmox-Nodes
+# Baut installierbare Debian-Pakete (.deb) mit systemd-Dienst für amd64
+# aus dem zuvor kompilierten Binary (via nfpm). Proxmox-Nodes
 # sind Debian — damit ist apt der natürliche Weg auf den Node.
 packages:deb:
   stage: build
   image: $GO_IMAGE
   cache: *go-cache
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
   needs:
     - binaries
-    - job: version
-      optional: true
+    - version
   script:
     - APP_VERSION=${NEXT_VERSION:-$(cat VERSION)}
     # Debian-Versionsformat: SemVer-Prerelease "-beta.1" wird zu "~beta.1",
     # damit die Beta laut apt VOR dem späteren Finale (1.0.0) sortiert.
     - DEB_VERSION=$(echo "$APP_VERSION" | tr '-' '~')
     - echo "Paketiere ${APP_VERSION} — Debian-Version ${DEB_VERSION}"
-    - |
-      for A in amd64 arm64; do
-        cp "bin/pve-optimizer-linux-${A}" bin/pve-optimizer-pkg
-        PVE_OPTIMIZER_ARCH="$A" PVE_OPTIMIZER_VERSION="$DEB_VERSION" \
-          go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
-          --config packaging/nfpm.yaml --packager deb --target bin/
-      done
+    - cp "bin/pve-optimizer-linux-amd64" bin/pve-optimizer-pkg
+    - PVE_OPTIMIZER_ARCH="amd64" PVE_OPTIMIZER_VERSION="$DEB_VERSION" \
+        go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
+        --config packaging/nfpm.yaml --packager deb --target bin/
     - rm -f bin/pve-optimizer-pkg
     - ls -lh bin/*.deb
   artifacts:
