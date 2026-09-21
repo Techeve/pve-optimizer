@@ -1,3 +1,4 @@
+GOLANGCI_LINT ?= $(shell which golangci-lint 2>/dev/null || echo $(HOME)/go/bin/golangci-lint)
 BINARY  := pve-optimizer
 VERSION := $(shell cat VERSION)
 LDFLAGS := -s -w \
@@ -13,9 +14,8 @@ help: ## Diese Übersicht anzeigen
 build: check ## Binary für den eigenen Rechner bauen
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
 
-build-linux: check ## Linux-Binaries (amd64 + arm64) bauen — das, was auf Proxmox läuft
+build-linux: check ## Linux-Binary (amd64) bauen — das, was auf Proxmox läuft
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-linux-amd64 ./cmd/$(BINARY)
-	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-linux-arm64 ./cmd/$(BINARY)
 
 check: fmt vet lint test vulncheck ## Alles, was auch die CI prüft
 
@@ -26,7 +26,7 @@ vet: ## go vet
 	go vet ./...
 
 lint: ## golangci-lint
-	golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
 
 test: ## Tests
 	go test ./...
@@ -34,13 +34,11 @@ test: ## Tests
 vulncheck: ## Bekannte Schwachstellen in den Abhängigkeiten
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-deb: build-linux ## Debian-Pakete (amd64 + arm64) bauen
-	@for A in amd64 arm64; do \
-		cp "bin/$(BINARY)-linux-$$A" bin/$(BINARY)-pkg; \
-		PVE_OPTIMIZER_ARCH="$$A" PVE_OPTIMIZER_VERSION="$(VERSION)" \
-			go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
-			--config packaging/nfpm.yaml --packager deb --target bin/; \
-	done
+deb: build-linux ## Debian-Paket (amd64) bauen
+	@cp "bin/$(BINARY)-linux-amd64" bin/$(BINARY)-pkg
+	@PVE_OPTIMIZER_ARCH="amd64" PVE_OPTIMIZER_VERSION="$(VERSION)" \
+		go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0 package \
+		--config packaging/nfpm.yaml --packager deb --target bin/
 	@rm -f bin/$(BINARY)-pkg
 	@ls -lh bin/*.deb
 
