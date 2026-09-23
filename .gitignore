@@ -3,3 +3,6 @@ bin/
 release.env
 changelog-snippet.md
 config.yaml
+
+# Ausgabe des Doku-Builds (docs-build schreibt nach public/)
+/public/
