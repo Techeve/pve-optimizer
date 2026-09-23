@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.8.1 — 2026-09-21
+
+### 🐛 Bugfixes
+
+- **ci**: nfpm aufruf im packages:deb job korrigieren (2b356755)
+- **ci**: pakete nur auf main bauen und arm64 entfernen (18fc5dca)
+
+### 🔧 Sonstiges
+
+- **release**: v0.8.0 — VERSION & Changelog aktualisiert [skip ci] (731cd76e)
+
 ## v0.8.0 — 2026-09-18
 
 ### 🚀 Features

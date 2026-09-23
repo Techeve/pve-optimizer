@@ -12,7 +12,7 @@ Gast-Agent · gestaffelter Start für VMs **und Container** — jede Prüfung
 eine eigene Regel, je Node einstellbar, und nichts davon überschreibt, was
 jemand bewusst gesetzt hat.
 
-[Installation](#installation) · [Regeln](#regeln) · [Konfiguration](#konfiguration) · [Lizenz](#lizenz) · [English](#english)
+[Dokumentation](https://doc.techeve.de/pve-optimizer/?mtm_campaign=linking&mtm_kwd=README) · [Installation](#installation) · [Regeln](#regeln) · [Konfiguration](#konfiguration) · [Lizenz](#lizenz) · [English](#english)
 
 </div>
 
@@ -749,11 +749,11 @@ Die Logik dahinter in Kurzform:
 
 ## Grenzen
 
-- **An Containern nur die Staffelung.** Proxmox kennt für LXC keine
-  Drosselung je Mountpoint und keinen Gast-Agenten; Drosselung ginge dort
-  nur über cgroup-Limits für den ganzen Container. Der gestaffelte Start
-  dagegen ist bei beiden Gastarten dasselbe Feld und wird deshalb auch bei
-  Containern ergänzt.
+- **An Containern nur Staffelung und Netzbegrenzung.** Proxmox kennt für
+  LXC keine Drosselung je Mountpoint und keinen Gast-Agenten; Drosselung
+  ginge dort nur über cgroup-Limits für den ganzen Container. Der
+  gestaffelte Start und die Rate der Netzwerkkarten dagegen sind bei beiden
+  Gastarten dasselbe Feld und werden deshalb auch bei Containern ergänzt.
 - **Kein Neustart von Gästen.** Was erst beim nächsten Start der VM wirkt,
   wirkt erst dann.
 - **Im laufenden Betrieb nur neue Aufgaben.** Beim ersten Start merkt sich
